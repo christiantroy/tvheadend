@@ -36,7 +36,7 @@ if [ -z "$VER" -a -s "$FILE" ]; then
 fi
 
 # Update?
-NEW_VER="const char *tvheadend_version = \"$VER\";"
+NEW_VER="const char *tvheadend_version = \"$VER-wetek\";"
 OLD_VER=$(cat "$FILE" 2> /dev/null)
 if [ "$NEW_VER" != "$OLD_VER" ]; then
   echo $NEW_VER > "$FILE"
