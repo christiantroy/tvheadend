@@ -788,7 +788,11 @@ dvr_config_init(void)
     if(cfg->dvr_storage == NULL || !strlen(cfg->dvr_storage)) {
       /* Try to figure out a good place to put them videos */
 
+#if ENABLE_ANDROID
+      homedir = getenv("EXTERNAL_STORAGE");
+#else
       homedir = getenv("HOME");
+#endif
 
       if(homedir != NULL) {
         snprintf(buf, sizeof(buf), "%s/Videos", homedir);
