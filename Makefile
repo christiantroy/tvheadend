@@ -34,6 +34,7 @@ CFLAGS  += -fms-extensions -funsigned-char -fno-strict-aliasing
 CFLAGS  += -D_FILE_OFFSET_BITS=64
 ifeq ($(CONFIG_ANDROID),yes)
 CFLAGS  += -fPIE
+CFLAGS  += -march=armv7-a -mcpu=cortex-a9 --fast-math
 endif
 CFLAGS  += -I${BUILDDIR} -I${ROOTDIR}/src -I${ROOTDIR}
 ifeq ($(CONFIG_ANDROID),yes)
