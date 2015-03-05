@@ -1194,6 +1194,10 @@ dobackup(const char *oldver)
     argv[0] = "/usr/bin/tar";
   else if (!access("/usr/local/bin/tar", X_OK))
     argv[0] = "/usr/local/bin/tar";
+#if ENABLE_ANDROID
+  else if (!access("/system/xbin/tar", X_OK))
+    argv[0] = "/system/xbin/tar";
+#endif
   else {
     tvherror("config", "unable to find tar program");
     goto fatal;
