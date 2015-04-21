@@ -50,10 +50,10 @@ ELIBS           = -L$(LIBAVDIR)/build/ffmpeg/lib -ldl
 
 CONFIGURE        = PKG_CONFIG=/tmp/nobin/pkg-config ./configure
 
-FFMPEG          = ffmpeg-2.5.2
+FFMPEG          = ffmpeg-2.6.2
 FFMPEG_TB       = $(FFMPEG).tar.bz2
 FFMPEG_URL      = http://ffmpeg.org/releases/$(FFMPEG_TB)
-FFMPEG_SHA1     = e167475426e8edf55601e79d3367c2210baa5f11
+FFMPEG_SHA1     = 65470c9b967485f72f81758a7bad44cf7a1763db
 
 EXTLIBS         = libx264 libvorbis libvpx
 COMPONENTS      = avutil avformat avcodec swresample swscale avresample
@@ -104,7 +104,7 @@ $(LIBAVDIR)/$(YASM)/.tvh_build: \
 	cd $(LIBAVDIR)/$(YASM) && $(CONFIGURE) \
                 --prefix=/ffmpeg
 	DESTDIR=$(LIBAVDIR)/build \
-		make -C $(LIBAVDIR)/$(YASM) install
+		$(MAKE) -C $(LIBAVDIR)/$(YASM) install
 	@touch $@
 
 #
@@ -124,7 +124,7 @@ $(LIBAVDIR)/$(LIBOGG)/.tvh_build: \
 		--enable-static \
 		--disable-shared
 	DESTDIR=$(LIBAVDIR)/build \
-		make -C $(LIBAVDIR)/$(LIBOGG) install
+		$(MAKE) -C $(LIBAVDIR)/$(LIBOGG) install
 	@touch $@
 
 $(LIBAVDIR)/$(LIBVORBIS)/.tvh_download: \
@@ -143,19 +143,17 @@ $(LIBAVDIR)/$(LIBVORBIS)/.tvh_build: \
 		--disable-shared \
 		--with-ogg=$(LIBAVDIR)/build/ffmpeg
 	DESTDIR=$(LIBAVDIR)/build \
-		make -C $(LIBAVDIR)/$(LIBVORBIS) install
+		$(MAKE) -C $(LIBAVDIR)/$(LIBVORBIS) install
 	@touch $@
 
 #
 # libx264
 #
 
-ARCH = $(shell $(CC) -dumpmachine | cut -d '-' -f 1)
-
-ifneq (,$(filter i386 i486 i586 i686 pentium,$(ARCH)))
+ifneq (yes,$(CONFIG_LIBFFMPEG_STATIC_X264))
 
 $(LIBAVDIR)/$(LIBX264)/.tvh_download:
-	@echo "***** PLEASE FIX !!!! libx264 build for i386 *****"
+	@echo "***** LIBX264 STATIC BUILD IS DISABLED, USING INSTALLED PACKAGE *****"
 	@mkdir -p $(LIBAVDIR)/$(LIBX264)
 	@touch $@
 
@@ -185,7 +183,7 @@ $(LIBAVDIR)/$(LIBX264)/.tvh_build: \
 		--disable-gpac \
 		--disable-lsmash
 	DESTDIR=$(LIBAVDIR)/build \
-		make -C $(LIBAVDIR)/$(LIBX264) install
+		$(MAKE) -C $(LIBAVDIR)/$(LIBX264) install
 	@touch $@
 
 endif
@@ -208,7 +206,7 @@ $(LIBAVDIR)/$(LIBVPX)/.tvh_build: \
 		--enable-static \
 		--disable-shared
 	DIST_DIR=$(LIBAVDIR)/build/ffmpeg \
-		make -C $(LIBAVDIR)/$(LIBVPX) install
+		$(MAKE) -C $(LIBAVDIR)/$(LIBVPX) install
 	@touch $@
 
 #
@@ -242,7 +240,7 @@ $(LIBAVDIR)/$(FFMPEG)/.tvh_build: \
 		$(foreach muxer,$(MUXERS),--enable-muxer=$(muxer)) \
 		$(foreach bsf,$(BSFS),--enable-bsf=$(bsf))
 	DESTDIR=$(LIBAVDIR)/build \
-		make -C $(LIBAVDIR)/$(FFMPEG) install
+		$(MAKE) -C $(LIBAVDIR)/$(FFMPEG) install
 	@touch $@
 
 .PHONY: static_libav_clean

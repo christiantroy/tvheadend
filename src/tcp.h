@@ -36,6 +36,10 @@
   ((storage).ss_family == AF_INET6 ? \
       ((struct sockaddr_in6 *)&(storage))->sin6_port : \
       ((struct sockaddr_in  *)&(storage))->sin_port)
+#define IP_PORT_SET(storage, port) \
+  if ((storage).ss_family == AF_INET6) \
+      ((struct sockaddr_in6 *)&(storage))->sin6_port = (port); else \
+      ((struct sockaddr_in  *)&(storage))->sin_port  = (port);
 
 typedef struct tcp_server_ops
 {
@@ -65,6 +69,10 @@ void *tcp_server_create(const char *bindaddr, int port,
 void tcp_server_register(void *server);
 
 void tcp_server_delete(void *server);
+
+int tcp_default_ip_addr(struct sockaddr_storage *deflt);
+
+int tcp_server_bound(void *server, struct sockaddr_storage *bound);
 
 int tcp_read(int fd, void *buf, size_t len);
 

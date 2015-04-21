@@ -111,6 +111,7 @@ typedef struct source_info {
   char *si_device;
   char *si_adapter;
   char *si_network;
+  char *si_satpos;
   char *si_mux;
   char *si_provider;
   char *si_service;
@@ -215,7 +216,8 @@ int get_device_connection(const char *dev);
 typedef enum {
   SCT_NONE = -1,
   SCT_UNKNOWN = 0,
-  SCT_MPEG2VIDEO = 1,
+  SCT_RAW = 1,
+  SCT_MPEG2VIDEO,
   SCT_MPEG2AUDIO,
   SCT_H264,
   SCT_AC3,
@@ -251,7 +253,7 @@ typedef enum {
 typedef enum {
   SIGNAL_STATUS_SCALE_UNKNOWN = 0,
   SIGNAL_STATUS_SCALE_RELATIVE, // value is unsigned, where 0 means 0% and 65535 means 100%
-  SIGNAL_STATUS_SCALE_DECIBEL   // value is measured in dB
+  SIGNAL_STATUS_SCALE_DECIBEL   // value is measured in dB * 1000
 } signal_status_scale_t;
 
 /**
@@ -574,12 +576,14 @@ extern void scopedunlock(pthread_mutex_t **mtxp);
 
 #define scopedgloballock() scopedlock(&global_lock)
 
-#define tvh_strdupa(n) ({ int tvh_l = strlen(n); \
- char *tvh_b = alloca(tvh_l + 1); \
- memcpy(tvh_b, n, tvh_l + 1); })
+#define tvh_strdupa(n) \
+  ({ int tvh_l = strlen(n); \
+     char *tvh_b = alloca(tvh_l + 1); \
+     memcpy(tvh_b, n, tvh_l + 1); })
 
-#define tvh_strlcatf(buf, size, fmt...) \
- snprintf((buf) + strlen(buf), (size) - strlen(buf), fmt)
+#define tvh_strlcatf(buf, size, ptr, fmt...) \
+  do { int __r = snprintf((buf) + ptr, (size) - ptr, fmt); \
+       ptr = __r >= (size) - ptr ? (size) - 1 : ptr + __r; } while (0)
 
 static inline const char *tvh_strbegins(const char *s1, const char *s2)
 {
@@ -705,7 +709,7 @@ static inline uint8_t *sbuf_peek(sbuf_t *sb, int off) { return sb->sb_data + off
 
 char *md5sum ( const char *str );
 
-int makedirs ( const char *path, int mode );
+int makedirs ( const char *path, int mode, gid_t gid, uid_t uid );
 
 int rmtree ( const char *path );
 
@@ -714,6 +718,8 @@ char *regexp_escape ( const char *str );
 /* URL decoding */
 char to_hex(char code);
 char *url_encode(char *str);
+
+int mpegts_word_count(const uint8_t *tsb, int len, uint32_t mask);
 
 static inline int32_t deltaI32(int32_t a, int32_t b) { return (a > b) ? (a - b) : (b - a); }
 static inline uint32_t deltaU32(uint32_t a, uint32_t b) { return (a > b) ? (a - b) : (b - a); }

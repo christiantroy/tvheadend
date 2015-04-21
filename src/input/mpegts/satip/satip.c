@@ -23,6 +23,7 @@
 #include "htsmsg_xml.h"
 #include "upnp.h"
 #include "settings.h"
+#include "satip/server.h"
 #include "satip_private.h"
 #include "dbus.h"
 
@@ -50,6 +51,7 @@ satip_device_dbus_notify( satip_device_t *sd, const char *sig_name )
   htsmsg_add_str(msg, NULL, sd->sd_info.addr);
   htsmsg_add_str(msg, NULL, sd->sd_info.location);
   htsmsg_add_str(msg, NULL, sd->sd_info.server);
+  htsmsg_add_s64(msg, NULL, sd->sd_info.rtsp_port);
   snprintf(buf, sizeof(buf), "/input/mpegts/satip/%s", idnode_uuid_as_str(&sd->th_id));
   dbus_emit_signal(buf, sig_name, msg);
 #endif
@@ -96,6 +98,19 @@ satip_device_addr( void *aux, const char *path, char *value )
     return strdup("ok");
   }
   return strdup("err");
+}
+
+/*
+ *
+ */
+char *
+satip_device_nicename( satip_device_t *sd, char *buf, int len )
+{
+  if (sd->sd_info.rtsp_port != 554)
+    snprintf(buf, len, "%s:%d", sd->sd_info.addr, sd->sd_info.rtsp_port);
+  else
+    snprintf(buf, len, "%s", sd->sd_info.addr);
+  return buf;
 }
 
 /*
@@ -200,6 +215,13 @@ const idclass_t satip_device_class =
       .name     = "IP Address",
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.addr),
+    },
+    {
+      .type     = PT_INT,
+      .id       = "rtsp",
+      .name     = "RTSP Port",
+      .opts     = PO_RDONLY | PO_NOSAVE,
+      .off      = offsetof(satip_device_t, sd_info.rtsp_port),
     },
     {
       .type     = PT_STR,
@@ -358,6 +380,10 @@ satip_device_hack( satip_device_t *sd )
   } else if (strstr(sd->sd_info.manufacturer, "Triax") &&
              strstr(sd->sd_info.modelname, "TSS400")) {
     sd->sd_pilot_on    = 1;
+  } else if (strcmp(sd->sd_info.modelname, "TVHeadend SAT>IP") == 0)  {
+    sd->sd_pids_max    = 128;
+    sd->sd_pids_len    = 2048;
+    sd->sd_no_univ_lnb = 1;
   }
 }
 
@@ -368,8 +394,9 @@ satip_device_create( satip_device_info_t *info )
   tvh_uuid_t uuid;
   htsmsg_t *conf = NULL, *feconf = NULL;
   char *argv[10];
-  int i, j, n, m, fenum, t2, save = 0;
+  int i, j, n, m, fenum, v2, save = 0;
   dvb_fe_type_t type;
+  char buf2[60];
 
   satip_device_calc_uuid(&uuid, info->uuid);
 
@@ -416,6 +443,8 @@ satip_device_create( satip_device_info_t *info )
   ASSIGN(presentation);
   ASSIGN(tunercfg);
 #undef ASSIGN
+  sd->sd_info.rtsp_port = info->rtsp_port;
+  sd->sd_info.srcs = info->srcs;
 
   /*
    * device specific hacks
@@ -429,28 +458,44 @@ satip_device_create( satip_device_info_t *info )
   n = http_tokenize(sd->sd_info.tunercfg, argv, 10, ',');
   for (i = 0, fenum = 1; i < n; i++) {
     type = DVB_TYPE_NONE;
-    t2 = 0;
+    v2 = 0;
     if (strncmp(argv[i], "DVBS2-", 6) == 0) {
       type = DVB_TYPE_S;
       m = atoi(argv[i] + 6);
+      v2 = 1;
+    } else if (strncmp(argv[i], "DVBS-", 5) == 0) {
+      type = DVB_TYPE_S;
+      m = atoi(argv[i] + 5);
     } else if (strncmp(argv[i], "DVBT2-", 6) == 0) {
       type = DVB_TYPE_T;
       m = atoi(argv[i] + 6);
-      t2 = 1;
+      v2 = 1;
     } else if (strncmp(argv[i], "DVBT-", 5) == 0) {
       type = DVB_TYPE_T;
       m = atoi(argv[i] + 5);
+    } else if (strncmp(argv[i], "DVBC2-", 6) == 0) {
+      type = DVB_TYPE_C;
+      m = atoi(argv[i] + 6);
+      v2 = 1;
     } else if (strncmp(argv[i], "DVBC-", 5) == 0) {
       type = DVB_TYPE_C;
       m = atoi(argv[i] + 5);
+    } else if (strncmp(argv[i], "ATSC-", 5) == 0) {
+      type = DVB_TYPE_ATSC;
+      m = atoi(argv[i] + 5);
+    } else if (strncmp(argv[i], "DVBCB-", 6) == 0) {
+      m = atoi(argv[i] + 6);
+      v2 = 2;
     }
     if (type == DVB_TYPE_NONE) {
-      tvhlog(LOG_ERR, "satip", "%s: bad tuner type [%s]", sd->sd_info.addr, argv[i]);
+      tvhlog(LOG_ERR, "satip", "%s: bad tuner type [%s]",
+             satip_device_nicename(sd, buf2, sizeof(buf2)), argv[i]);
     } else if (m < 0 || m > 32) {
-      tvhlog(LOG_ERR, "satip", "%s: bad tuner count [%s]", sd->sd_info.addr, argv[i]);
+      tvhlog(LOG_ERR, "satip", "%s: bad tuner count [%s]",
+             satip_device_nicename(sd, buf2, sizeof(buf2)), argv[i]);
     } else {
       for (j = 0; j < m; j++)
-        if (satip_frontend_create(feconf, sd, type, t2, fenum))
+        if (satip_frontend_create(feconf, sd, type, v2, fenum))
           fenum++;
     }
   }
@@ -635,7 +680,7 @@ satip_discovery_http_closed(http_client_t *hc, int errn)
   const char *friendlyname, *manufacturer, *manufacturerURL, *modeldesc;
   const char *modelname, *modelnum, *serialnum;
   const char *presentation, *tunercfg, *udn, *uuid;
-  const char *cs;
+  const char *cs, *arg;
   satip_device_info_t info;
   char errbuf[100];
   char *argv[10];
@@ -703,7 +748,7 @@ satip_discovery_http_closed(http_client_t *hc, int errn)
   if ((manufacturer = htsmsg_xml_get_cdata_str(device, "manufacturer")) == NULL)
     goto finish;
   if ((manufacturerURL = htsmsg_xml_get_cdata_str(device, "manufacturerURL")) == NULL)
-    goto finish;
+    manufacturerURL = "";
   if ((modeldesc    = htsmsg_xml_get_cdata_str(device, "modelDescription")) == NULL)
     modeldesc = "";
   if ((modelname    = htsmsg_xml_get_cdata_str(device, "modelName")) == NULL)
@@ -728,6 +773,22 @@ satip_discovery_http_closed(http_client_t *hc, int errn)
     }
   if (uuid == NULL || (d->uuid[0] && strcmp(uuid, d->uuid)))
     goto finish;
+
+  info.rtsp_port = 554;
+  info.srcs = 4;
+
+  arg = http_arg_get(&hc->hc_args, "X-SATIP-RTSP-Port");
+  if (arg) {
+    i = atoi(arg);
+    if (i > 0 && i < 65535)
+      info.rtsp_port = i;
+  }
+  arg = http_arg_get(&hc->hc_args, "X-SATIP-Sources");
+  if (arg) {
+    i = atoi(arg);
+    if (i > 0 && i < 128)
+      info.srcs = i;
+  }
 
   info.myaddr = strdup(d->myaddr);
   info.addr = strdup(d->url.host);
@@ -882,7 +943,7 @@ satip_discovery_service_received
   /* Sanity checks */
   if (st == NULL || strcmp(st, "urn:ses-com:device:SatIPServer:1"))
     return;
-  if (uuid == NULL || strlen(uuid) < 16)
+  if (uuid == NULL || strlen(uuid) < 16 || satip_server_match_uuid(uuid))
     return;
   if (location == NULL || strncmp(location, "http://", 7))
     return;
@@ -976,7 +1037,7 @@ ST: urn:ses-com:device:SatIPServer:1\r\n"
   htsbuf_append(&q, MSG, sizeof(MSG)-1);
   htsbuf_qprintf(&q, "USER-AGENT: unix/1.0 UPnP/1.1 TVHeadend/%s\r\n", tvheadend_version);
   htsbuf_append(&q, "\r\n", 2);
-  upnp_send(&q, NULL);
+  upnp_send(&q, NULL, 0);
   htsbuf_queue_flush(&q);
 
   gtimer_arm_ms(&satip_discovery_msearch_timer, satip_discovery_send_msearch,

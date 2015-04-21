@@ -85,9 +85,9 @@ dvr_rec_subscribe(dvr_entry_t *de)
     return;
   }
 
-  de->de_s = subscription_create_from_channel(prch, weight,
+  de->de_s = subscription_create_from_channel(prch, NULL, weight,
 					      buf, prch->prch_flags,
-					      NULL, NULL, NULL);
+					      NULL, NULL, NULL, NULL);
   if (de->de_s == NULL) {
     tvherror("dvr", "unable to create new channel subcription for '%s'",
              channel_get_name(de->de_channel));
@@ -117,7 +117,7 @@ dvr_rec_unsubscribe(dvr_entry_t *de, int stopcode)
   
   pthread_join(de->de_thread, NULL);
 
-  subscription_unsubscribe(de->de_s);
+  subscription_unsubscribe(de->de_s, 0);
   de->de_s = NULL;
 
   de->de_chain = NULL;
@@ -257,7 +257,7 @@ pvr_generate_filename(dvr_entry_t *de, const streaming_start_t *ss)
     }
   }
 
-  if (makedirs(path, cfg->dvr_muxcnf.m_directory_permissions) != 0)
+  if (makedirs(path, cfg->dvr_muxcnf.m_directory_permissions, -1, -1) != 0)
     return -1;
   
   /* Construct final name */

@@ -47,6 +47,9 @@
 #if ENABLE_MPEGTS
 #include "input.h"
 #endif
+#if ENABLE_SATIP_SERVER
+#include "satip/server.h"
+#endif
 
 #if defined(PLATFORM_LINUX)
 #include <sys/sendfile.h>
@@ -186,7 +189,7 @@ page_static_file(http_connection_t *hc, const char *remain, void *opaque)
   size = fb_size(fp);
   gzip = fb_gzipped(fp) ? "gzip" : NULL;
 
-  http_send_header(hc, 200, content, size, gzip, NULL, 10, 0, NULL);
+  http_send_header(hc, 200, content, size, gzip, NULL, 10, 0, NULL, NULL);
   while (!fb_eof(fp)) {
     ssize_t c = fb_read(fp, buf, sizeof(buf));
     if (c < 0) {
@@ -256,7 +259,7 @@ http_stream_run(http_connection_t *hc, profile_chain_t *prch,
   while(!hc->hc_shutdown && run && tvheadend_running) {
     pthread_mutex_lock(&sq->sq_mutex);
     sm = TAILQ_FIRST(&sq->sq_queue);
-    if(sm == NULL) {      
+    if(sm == NULL) {
       gettimeofday(&tp, NULL);
       ts.tv_sec  = tp.tv_sec + 1;
       ts.tv_nsec = tp.tv_usec * 1000;
@@ -741,7 +744,6 @@ http_stream_service(http_connection_t *hc, service_t *service, int weight)
   const char *str;
   size_t qsize;
   const char *name;
-  char addrbuf[50];
   void *tcp_id;
   int res = HTTP_STATUS_SERVICE;
 
@@ -764,19 +766,18 @@ http_stream_service(http_connection_t *hc, service_t *service, int weight)
   profile_chain_init(&prch, pro, service);
   if (!profile_chain_open(&prch, NULL, 0, qsize)) {
 
-    tcp_get_ip_str((struct sockaddr*)hc->hc_peer, addrbuf, 50);
-
-    s = subscription_create_from_service(&prch, weight ?: 100, "HTTP",
+    s = subscription_create_from_service(&prch, NULL, weight ?: 100, "HTTP",
                                          prch.prch_flags | SUBSCRIPTION_STREAMING,
-                                         addrbuf,
+                                         hc->hc_peer_ipstr,
 				         hc->hc_username,
-				         http_arg_get(&hc->hc_args, "User-Agent"));
+				         http_arg_get(&hc->hc_args, "User-Agent"),
+				         NULL);
     if(s) {
       name = tvh_strdupa(service->s_nicename);
       pthread_mutex_unlock(&global_lock);
       http_stream_run(hc, &prch, name, s);
       pthread_mutex_lock(&global_lock);
-      subscription_unsubscribe(s);
+      subscription_unsubscribe(s, 0);
       res = 0;
     }
   }
@@ -798,11 +799,12 @@ http_stream_mux(http_connection_t *hc, mpegts_mux_t *mm, int weight)
   th_subscription_t *s;
   profile_chain_t prch;
   size_t qsize;
-  const char *name;
-  char addrbuf[50];
+  const char *name, *str;
   void *tcp_id;
-  const char *str;
-  int res = HTTP_STATUS_SERVICE;
+  char *p, *saveptr = NULL;
+  mpegts_apids_t pids;
+  mpegts_service_t *ms;
+  int res = HTTP_STATUS_SERVICE, i;
 
   if(http_access_verify(hc, ACCESS_ADVANCED_STREAMING))
     return HTTP_STATUS_UNAUTHORIZED;
@@ -815,22 +817,47 @@ http_stream_mux(http_connection_t *hc, mpegts_mux_t *mm, int weight)
   else
     qsize = 10000000;
 
-  if (!profile_chain_raw_open(&prch, mm, qsize)) {
+  mpegts_pid_init(&pids);
+  if ((str = http_arg_get(&hc->hc_req_args, "pids"))) {
+    p = tvh_strdupa(str);
+    p = strtok_r(p, ",", &saveptr);
+    while (p) {
+      if (strcmp(p, "all") == 0) {
+        pids.all = 1;
+      } else {
+        i = atoi(p);
+        if (i < 0 || i > 8192)
+          return HTTP_STATUS_BAD_REQUEST;
+        if (i == 8192)
+          pids.all = 1;
+        else
+          mpegts_pid_add(&pids, i);
+      }
+      p = strtok_r(NULL, ",", &saveptr);
+    }
+    if (!pids.all && pids.count <= 0)
+      return HTTP_STATUS_BAD_REQUEST;
+  } else {
+    pids.all = 1;
+  }
 
-    tcp_get_ip_str((struct sockaddr*)hc->hc_peer, addrbuf, 50);
+  if (!profile_chain_raw_open(&prch, mm, qsize, 1)) {
 
     s = subscription_create_from_mux(&prch, NULL, weight ?: 10, "HTTP",
                                      prch.prch_flags |
-                                     SUBSCRIPTION_FULLMUX |
                                      SUBSCRIPTION_STREAMING,
-                                     addrbuf, hc->hc_username,
-                                     http_arg_get(&hc->hc_args, "User-Agent"), NULL);
+                                     hc->hc_peer_ipstr, hc->hc_username,
+                                     http_arg_get(&hc->hc_args, "User-Agent"),
+                                     NULL);
     if (s) {
       name = tvh_strdupa(s->ths_title);
-      pthread_mutex_unlock(&global_lock);
-      http_stream_run(hc, &prch, name, s);
-      pthread_mutex_lock(&global_lock);
-      subscription_unsubscribe(s);
+      ms = (mpegts_service_t *)s->ths_service;
+      if (ms->s_update_pids(ms, &pids) == 0) {
+        pthread_mutex_unlock(&global_lock);
+        http_stream_run(hc, &prch, name, s);
+        pthread_mutex_lock(&global_lock);
+      }
+      subscription_unsubscribe(s, 0);
       res = 0;
     }
   }
@@ -854,7 +881,6 @@ http_stream_channel(http_connection_t *hc, channel_t *ch, int weight)
   char *str;
   size_t qsize;
   const char *name;
-  char addrbuf[50];
   void *tcp_id;
   int res = HTTP_STATUS_SERVICE;
 
@@ -877,19 +903,19 @@ http_stream_channel(http_connection_t *hc, channel_t *ch, int weight)
   profile_chain_init(&prch, pro, ch);
   if (!profile_chain_open(&prch, NULL, 0, qsize)) {
 
-    tcp_get_ip_str((struct sockaddr*)hc->hc_peer, addrbuf, 50);
-
-    s = subscription_create_from_channel(&prch, weight ?: 100, "HTTP",
+    s = subscription_create_from_channel(&prch,
+                 NULL, weight ?: 100, "HTTP",
                  prch.prch_flags | SUBSCRIPTION_STREAMING,
-                 addrbuf, hc->hc_username,
-                 http_arg_get(&hc->hc_args, "User-Agent"));
+                 hc->hc_peer_ipstr, hc->hc_username,
+                 http_arg_get(&hc->hc_args, "User-Agent"),
+                 NULL);
 
     if(s) {
       name = tvh_strdupa(channel_get_name(ch));
       pthread_mutex_unlock(&global_lock);
       http_stream_run(hc, &prch, name, s);
       pthread_mutex_lock(&global_lock);
-      subscription_unsubscribe(s);
+      subscription_unsubscribe(s, 0);
       res = 0;
     }
   }
@@ -999,7 +1025,7 @@ page_xspf(http_connection_t *hc, const char *remain, void *opaque)
   image ? "       <image>" : "", image ?: "", image ? "</image>\r\n" : "");
 
   len = strlen(buf);
-  http_send_header(hc, 200, "application/xspf+xml", len, 0, NULL, 10, 0, NULL);
+  http_send_header(hc, 200, "application/xspf+xml", len, 0, NULL, 10, 0, NULL, NULL);
   tvh_write(hc->hc_fd, buf, len);
 
   free(hostpath);
@@ -1031,7 +1057,7 @@ page_m3u(http_connection_t *hc, const char *remain, void *opaque)
 %s/%s%s%s\r\n", title, hostpath, remain, profile ? "?profile=" : "", profile ?: "");
 
   len = strlen(buf);
-  http_send_header(hc, 200, "audio/x-mpegurl", len, 0, NULL, 10, 0, NULL);
+  http_send_header(hc, 200, "audio/x-mpegurl", len, 0, NULL, 10, 0, NULL, NULL);
   tvh_write(hc->hc_fd, buf, len);
 
   free(hostpath);
@@ -1205,12 +1231,11 @@ page_dvrfile(http_connection_t *hc, const char *remain, void *opaque)
 
   pthread_mutex_lock(&global_lock);
   tcp_id = http_stream_preop(hc);
-  tcp_get_ip_str((struct sockaddr*)hc->hc_peer, range_buf, 50);
   sub = NULL;
   if (tcp_id && !hc->hc_no_output && content_len > 64*1024) {
     sub = subscription_create(NULL, 1, "HTTP",
                               SUBSCRIPTION_NONE, NULL,
-                              range_buf, hc->hc_username,
+                              hc->hc_peer_ipstr, hc->hc_username,
                               http_arg_get(&hc->hc_args, "User-Agent"));
     if (sub == NULL) {
       http_stream_postop(tcp_id);
@@ -1231,7 +1256,7 @@ page_dvrfile(http_connection_t *hc, const char *remain, void *opaque)
   http_send_header(hc, range ? HTTP_STATUS_PARTIAL_CONTENT : HTTP_STATUS_OK,
        content, content_len, NULL, NULL, 10, 
        range ? range_buf : NULL,
-       disposition[0] ? disposition : NULL);
+       disposition[0] ? disposition : NULL, NULL);
 
   ret = 0;
   if(!hc->hc_no_output) {
@@ -1260,7 +1285,7 @@ page_dvrfile(http_connection_t *hc, const char *remain, void *opaque)
 
   pthread_mutex_lock(&global_lock);
   if (sub)
-    subscription_unsubscribe(sub);
+    subscription_unsubscribe(sub, 0);
   http_stream_postop(tcp_id);
   pthread_mutex_unlock(&global_lock);
   return ret;
@@ -1310,7 +1335,7 @@ page_imagecache(http_connection_t *hc, const char *remain, void *opaque)
     return HTTP_STATUS_NOT_FOUND;
   }
 
-  http_send_header(hc, 200, NULL, st.st_size, 0, NULL, 10, 0, NULL);
+  http_send_header(hc, 200, NULL, st.st_size, 0, NULL, 10, 0, NULL, NULL);
 
   while (1) {
     c = read(fd, buf, sizeof(buf));
@@ -1363,6 +1388,10 @@ webui_init(int xspf)
   http_path_add("/login", NULL, page_login, ACCESS_WEB_INTERFACE);
   http_path_add("/logout", NULL, page_logout, ACCESS_WEB_INTERFACE);
 
+#if CONFIG_SATIP_SERVER
+  http_path_add("/satip_server", NULL, satip_server_http_page, ACCESS_ANONYMOUS);
+#endif
+
   http_path_add_modify("/play", NULL, page_play, ACCESS_ANONYMOUS, page_play_path_modify);
   http_path_add("/dvrfile", NULL, page_dvrfile, ACCESS_ANONYMOUS);
   http_path_add("/favicon.ico", NULL, favicon, ACCESS_WEB_INTERFACE);
@@ -1382,7 +1411,6 @@ webui_init(int xspf)
   extjs_start();
   comet_init();
   webui_api_init();
-
 }
 
 void

@@ -155,8 +155,7 @@ access_ticket_verify2(const char *id, const char *resource)
     return NULL;
 
   if (tvheadend_webroot) {
-    strcpy(buf, tvheadend_webroot);
-    strcat(buf, at->at_resource);
+    snprintf(buf, sizeof(buf), "%s%s", tvheadend_webroot, at->at_resource);
     r = buf;
   } else {
     r = at->at_resource;
@@ -353,10 +352,11 @@ static void
 access_dump_a(access_t *a)
 {
   htsmsg_field_t *f;
+  size_t l = 0;
   char buf[1024];
   int first;
 
-  snprintf(buf, sizeof(buf),
+  tvh_strlcatf(buf, sizeof(buf), l,
     "%s:%s [%c%c%c%c%c%c%c%c%c], conn=%u, chmin=%llu, chmax=%llu%s",
     a->aa_representative ?: "<no-id>",
     a->aa_username ?: "<no-user>",
@@ -379,14 +379,14 @@ access_dump_a(access_t *a)
       profile_t *pro = profile_find_by_uuid(htsmsg_field_get_str(f) ?: "");
       if (pro) {
         if (first)
-          snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), ", profile=");
-        snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), "%s'%s'",
+          tvh_strlcatf(buf, sizeof(buf), l, ", profile=");
+        tvh_strlcatf(buf, sizeof(buf), l, "%s'%s'",
                  first ? "" : ",", pro->pro_name ?: "");
         first = 0;
       }
     }
   } else {
-    snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), ", profile=ANY");
+    tvh_strlcatf(buf, sizeof(buf), l, ", profile=ANY");
   }
 
   if (a->aa_dvrcfgs) {
@@ -395,14 +395,14 @@ access_dump_a(access_t *a)
       dvr_config_t *cfg = dvr_config_find_by_uuid(htsmsg_field_get_str(f) ?: "");
       if (cfg) {
         if (first)
-          snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), ", dvr=");
-        snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), "%s'%s'",
+          tvh_strlcatf(buf, sizeof(buf), l, ", dvr=");
+        tvh_strlcatf(buf, sizeof(buf), l, "%s'%s'",
                  first ? "" : ",", cfg->dvr_config_name ?: "");
         first = 0;
       }
     }
   } else {
-    snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), ", dvr=ANY");
+    tvh_strlcatf(buf, sizeof(buf), l, ", dvr=ANY");
   }
 
   if (a->aa_chtags) {
@@ -411,14 +411,14 @@ access_dump_a(access_t *a)
       channel_tag_t *ct = channel_tag_find_by_uuid(htsmsg_field_get_str(f) ?: "");
       if (ct) {
         if (first)
-          snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), ", tags=");
-        snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), "%s'%s'",
+          tvh_strlcatf(buf, sizeof(buf), l, ", tags=");
+        tvh_strlcatf(buf, sizeof(buf), l, "%s'%s'",
                  first ? "" : ",", ct->ct_name ?: "");
         first = 0;
       }
     }
   } else {
-    snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), ", tag=ANY");
+    tvh_strlcatf(buf, sizeof(buf), l, ", tag=ANY");
   }
 
   tvhtrace("access", "%s", buf);
@@ -1075,7 +1075,7 @@ access_entry_class_prefix_get(void *o)
       s_addr = htonl(ai->ai_network);
       inet_ntop(AF_INET, &s_addr, addrbuf, sizeof(addrbuf));
     }
-    pos += snprintf(buf+pos, sizeof(buf)-pos, ",%s/%d", addrbuf, ai->ai_prefixlen);
+    tvh_strlcatf(buf, sizeof(buf), pos, ",%s/%d", addrbuf, ai->ai_prefixlen);
   }
   return &ret;
 }

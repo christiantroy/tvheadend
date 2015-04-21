@@ -33,10 +33,6 @@
 #include <dirent.h>
 #include <fcntl.h>
 
-static mpegts_mux_t *
-dvb_network_find_mux
-  ( dvb_network_t *ln, dvb_mux_conf_t *dmc, uint16_t onid, uint16_t tsid );
-
 /* ****************************************************************************
  * Class definition
  * ***************************************************************************/
@@ -68,7 +64,7 @@ dvb_network_class_scanfile_set ( void *o, const void *s )
   dvb_network_t *ln = o;
   dvb_mux_conf_t *dmc;
   scanfile_network_t *sfn;
-  mpegts_mux_t *mm;
+  dvb_mux_t *mm;
 
   /* Find */
   if (!s)
@@ -83,12 +79,10 @@ dvb_network_class_scanfile_set ( void *o, const void *s )
   /* Create */
   LIST_FOREACH(dmc, &sfn->sfn_muxes, dmc_link) {
     if (!(mm = dvb_network_find_mux(ln, dmc, MPEGTS_ONID_NONE, MPEGTS_TSID_NONE))) {
-      mm = (mpegts_mux_t*)dvb_mux_create0(o,
-                                          MPEGTS_ONID_NONE,
-                                          MPEGTS_TSID_NONE,
-                                          dmc, NULL, NULL);
+      mm = dvb_mux_create0(o, MPEGTS_ONID_NONE, MPEGTS_TSID_NONE,
+                           dmc, NULL, NULL);
       if (mm)
-        mm->mm_config_save(mm);
+        mm->mm_config_save((mpegts_mux_t *)mm);
 #if ENABLE_TRACE
       char buf[128];
       dvb_mux_conf_str(dmc, buf, sizeof(buf));
@@ -328,7 +322,7 @@ dvb_network_check_orbital_pos ( int satpos1, int satpos2 )
   return 0;
 }
 
-static mpegts_mux_t *
+dvb_mux_t *
 dvb_network_find_mux
   ( dvb_network_t *ln, dvb_mux_conf_t *dmc, uint16_t onid, uint16_t tsid )
 {
@@ -390,7 +384,7 @@ dvb_network_find_mux
     /* in the NIT table information and real mux feed */
     mm = mm_alt;
   }
-  return mm;
+  return (dvb_mux_t *)mm;
 }
 
 static void
@@ -421,11 +415,11 @@ dvb_network_mux_class
 
 static mpegts_mux_t *
 dvb_network_create_mux
-  ( mpegts_mux_t *mm, uint16_t onid, uint16_t tsid, void *p, int force )
+  ( mpegts_network_t *mn, void *origin, uint16_t onid, uint16_t tsid,
+    void *p, int force )
 {
   int save = 0, satpos;
-  mpegts_mux_t *mmo = mm;
-  mpegts_network_t *mn = mm->mm_network;
+  dvb_mux_t *mm;
   dvb_network_t *ln;
   dvb_mux_conf_t *dmc = p;
   const idclass_t *cls = dvb_network_mux_class(mn);
@@ -461,7 +455,7 @@ dvb_network_create_mux
         save = 0;
     }
     if (save) {
-      mm = (mpegts_mux_t*)dvb_mux_create0(ln, onid, tsid, dmc, NULL, NULL);
+      mm = dvb_mux_create0(ln, onid, tsid, dmc, NULL, NULL);
 #if ENABLE_TRACE
       char buf[128];
       dvb_mux_conf_str(&((dvb_mux_t *)mm)->lm_tuning, buf, sizeof(buf));
@@ -473,7 +467,7 @@ dvb_network_create_mux
     dvb_mux_t *lm = (dvb_mux_t*)mm;
     /* the nit tables may be inconsistent (like rolloff ping-pong) */
     /* accept information only from one origin mux */
-    if (mm->mm_dmc_origin_expire > dispatch_clock && mm->mm_dmc_origin && mm->mm_dmc_origin != mmo)
+    if (mm->mm_dmc_origin_expire > dispatch_clock && mm->mm_dmc_origin && mm->mm_dmc_origin != origin)
       goto noop;
 #if ENABLE_TRACE
     #define COMPARE(x) ({ \
@@ -501,11 +495,9 @@ dvb_network_create_mux
       if (xr) lm->lm_tuning.x = dmc->x; \
       xr; })
 #endif
-#if ENABLE_TRACE
     dvb_mux_conf_t tuning_old;
     char buf[128];
     tuning_old = lm->lm_tuning;
-#endif
     /* Always save the orbital position */
     if (dmc->dmc_fe_type == DVB_TYPE_S) {
       if (lm->lm_tuning.u.dmc_fe_qpsk.orbital_pos == INT_MAX ||
@@ -552,25 +544,23 @@ dvb_network_create_mux
     }
     #undef COMPARE
     #undef COMPAREN
-#if ENABLE_TRACE
     if (save) {
+      char muxname[128];
+      mpegts_mux_nice_name((mpegts_mux_t *)mm, muxname, sizeof(muxname));
       dvb_mux_conf_str(&tuning_old, buf, sizeof(buf));
-      tvhtrace("mpegts", "mux %p changed from %s in network %s",
-               mm, buf, mm->mm_network->mn_network_name);
+      tvhwarn("mpegts", "mux %s changed from %s", muxname, buf);
       dvb_mux_conf_str(&lm->lm_tuning, buf, sizeof(buf));
-      tvhtrace("mpegts", "mux %p changed to %s in network %s",
-               mm, buf, mm->mm_network->mn_network_name);
+      tvhwarn("mpegts", "mux %s changed to   %s", muxname, buf);
     }
-#endif
   }
 save:
   if (mm && save) {
-    mm->mm_dmc_origin        = mmo;
+    mm->mm_dmc_origin        = origin;
     mm->mm_dmc_origin_expire = dispatch_clock + 3600 * 24; /* one day */
-    mm->mm_config_save(mm);
+    mm->mm_config_save((mpegts_mux_t *)mm);
   }
 noop:
-  return mm;
+  return (mpegts_mux_t *)mm;
 }
 
 static mpegts_service_t *

@@ -680,6 +680,7 @@ profile_chain_init(profile_chain_t *prch, profile_t *pro, void *id)
   prch->prch_pro = pro;
   prch->prch_id  = id;
   streaming_queue_init(&prch->prch_sq, 0, 0);
+  prch->prch_sq_used = 1;
   LIST_INSERT_HEAD(&profile_chains, prch, prch_link);
   prch->prch_linked = 1;
   prch->prch_stop = 1;
@@ -728,18 +729,21 @@ profile_chain_open(profile_chain_t *prch,
  *
  */
 int
-profile_chain_raw_open(profile_chain_t *prch, void *id, size_t qsize)
+profile_chain_raw_open(profile_chain_t *prch, void *id, size_t qsize, int muxer)
 {
   muxer_config_t c;
 
-  memset(&c, 0, sizeof(c));
-  c.m_type = MC_RAW;
   memset(prch, 0, sizeof(*prch));
   prch->prch_id    = id;
-  prch->prch_flags = SUBSCRIPTION_RAW_MPEGTS;
+  prch->prch_flags = SUBSCRIPTION_MPEGTS;
   streaming_queue_init(&prch->prch_sq, SMT_PACKET, qsize);
+  prch->prch_sq_used = 1;
   prch->prch_st    = &prch->prch_sq.sq_st;
-  prch->prch_muxer = muxer_create(&c);
+  if (muxer) {
+    memset(&c, 0, sizeof(c));
+    c.m_type = MC_RAW;
+    prch->prch_muxer = muxer_create(&c);
+  }
   return 0;
 }
 
@@ -772,8 +776,12 @@ profile_chain_close(profile_chain_t *prch)
 
   prch->prch_st = NULL;
 
-  if (prch->prch_linked) {
+  if (prch->prch_sq_used) {
     streaming_queue_deinit(&prch->prch_sq);
+    prch->prch_sq_used = 0;
+  }
+
+  if (prch->prch_linked) {
     LIST_REMOVE(prch, prch_link);
     prch->prch_linked = 0;
   }
@@ -782,6 +790,8 @@ profile_chain_close(profile_chain_t *prch)
     profile_release(prch->prch_pro);
     prch->prch_pro = NULL;
   }
+
+  prch->prch_id = NULL;
 }
 
 /*
@@ -823,6 +833,7 @@ profile_htsp_work(profile_chain_t *prch,
     prsh->prsh_tsfix = tsfix_create(&prsh->prsh_input);
 
   prch->prch_share = prsh->prsh_tsfix;
+  prch->prch_flags = SUBSCRIPTION_PACKET;
   streaming_target_init(&prch->prch_input, profile_input, prch, 0);
   prch->prch_st = &prch->prch_input;
   return 0;
@@ -854,6 +865,8 @@ typedef struct profile_mpegts {
   profile_t;
   int pro_rewrite_pmt;
   int pro_rewrite_pat;
+  int pro_rewrite_sdt;
+  int pro_rewrite_eit;
 } profile_mpegts_t;
 
 const idclass_t profile_mpegts_pass_class =
@@ -876,6 +889,20 @@ const idclass_t profile_mpegts_pass_class =
       .off      = offsetof(profile_mpegts_t, pro_rewrite_pat),
       .def.i    = 1,
     },
+    {
+      .type     = PT_BOOL,
+      .id       = "rewrite_sdt",
+      .name     = "Rewrite SDT",
+      .off      = offsetof(profile_mpegts_t, pro_rewrite_sdt),
+      .def.i    = 1,
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "rewrite_eit",
+      .name     = "Rewrite EIT",
+      .off      = offsetof(profile_mpegts_t, pro_rewrite_eit),
+      .def.i    = 1,
+    },
     { }
   }
 };
@@ -895,6 +922,8 @@ profile_mpegts_pass_reopen(profile_chain_t *prch,
     c.m_type = MC_PASS;
   c.m_rewrite_pat = pro->pro_rewrite_pat;
   c.m_rewrite_pmt = pro->pro_rewrite_pmt;
+  c.m_rewrite_sdt = pro->pro_rewrite_sdt;
+  c.m_rewrite_eit = pro->pro_rewrite_eit;
 
   assert(!prch->prch_muxer);
   prch->prch_muxer = muxer_create(&c);
@@ -905,7 +934,7 @@ static int
 profile_mpegts_pass_open(profile_chain_t *prch,
                          muxer_config_t *m_cfg, int flags, size_t qsize)
 {
-  prch->prch_flags = SUBSCRIPTION_RAW_MPEGTS;
+  prch->prch_flags = SUBSCRIPTION_MPEGTS;
 
   prch->prch_sq.sq_st.st_reject_filter = SMT_PACKET;
   prch->prch_sq.sq_maxsize = qsize;
@@ -984,6 +1013,7 @@ profile_matroska_open(profile_chain_t *prch,
 {
   streaming_target_t *dst;
 
+  prch->prch_flags = SUBSCRIPTION_PACKET;
   prch->prch_sq.sq_maxsize = qsize;
 
   dst = prch->prch_gh    = globalheaders_create(&prch->prch_sq.sq_st);
@@ -1056,6 +1086,7 @@ profile_libav_mpegts_open(profile_chain_t *prch,
 {
   int r;
 
+  prch->prch_flags = SUBSCRIPTION_PACKET;
   prch->prch_sq.sq_maxsize = qsize;
 
   r = profile_htsp_work(prch, &prch->prch_sq.sq_st, 0, 0);
@@ -1136,6 +1167,7 @@ profile_libav_matroska_open(profile_chain_t *prch,
 {
   int r;
 
+  prch->prch_flags = SUBSCRIPTION_PACKET;
   prch->prch_sq.sq_maxsize = qsize;
 
   r = profile_htsp_work(prch, &prch->prch_sq.sq_st, 0, 0);
@@ -1552,6 +1584,7 @@ profile_transcode_open(profile_chain_t *prch,
 {
   int r;
 
+  prch->prch_flags = SUBSCRIPTION_PACKET;
   prch->prch_sq.sq_maxsize = qsize;
 
   r = profile_transcode_work(prch, &prch->prch_sq.sq_st, 0, 0);

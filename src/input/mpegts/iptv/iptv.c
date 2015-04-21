@@ -140,13 +140,6 @@ iptv_input_get_weight ( mpegts_input_t *mi, int flags )
   if (!iptv_input_is_free(mi)) {
     w = 1000000;
 
-    /* Direct subs */
-    LIST_FOREACH(mmi, &mi->mi_mux_active, mmi_active_link) {
-      LIST_FOREACH(ths, &mmi->mmi_subs, ths_mmi_link) {
-        w = MIN(w, ths->ths_weight);
-      }
-    }
-
     /* Service subs */
     pthread_mutex_lock(&mi->mi_output_lock);
     LIST_FOREACH(s, &mi->mi_transports, s_active_link) {
@@ -400,7 +393,6 @@ iptv_input_fd_started ( iptv_mux_t *im )
 void
 iptv_input_mux_started ( iptv_mux_t *im )
 {
-
   /* Allocate input buffer */
   sbuf_init_fixed(&im->mm_iptv_buffer, IPTV_BUF_SIZE);
 

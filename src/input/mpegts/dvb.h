@@ -37,6 +37,7 @@ struct mpegts_mux;
 #define DVB_NIT_PID                   0x10
 #define DVB_SDT_PID                   0x11
 #define DVB_BAT_PID                   0x11
+#define DVB_EIT_PID                   0x12
 #define DVB_VCT_PID                   0x1FFB
 
 /* Tables */
@@ -199,42 +200,94 @@ do {\
   DVB_LOOP_INIT(ptr, len, off, lptr, llen);\
   DVB_DESC_EACH(lptr, llen, dtag, dlen, dptr)\
 
-/* PSI table callbacks */
+/*
+ * SI typedefs
+ */
+
+#define MPEGTS_PSI_SECTION_SIZE 5000
+
+typedef struct mpegts_psi_section
+{
+  int8_t  ps_cc;
+  int8_t  ps_cco;
+  int     ps_offset;
+  int     ps_lock;
+  uint8_t ps_data[MPEGTS_PSI_SECTION_SIZE];
+} mpegts_psi_section_t;
+
+typedef void (*mpegts_psi_section_callback_t)
+  ( const uint8_t *tsb, size_t len, void *opaque );
+
+typedef struct mpegts_psi_table_state
+{
+  int      tableid;
+  uint64_t extraid;
+  int      version;
+  int      complete;
+  int      working;
+  uint32_t sections[8];
+  RB_ENTRY(mpegts_psi_table_state) link;
+} mpegts_psi_table_state_t;
+
+typedef struct mpegts_psi_table
+{
+  LIST_ENTRY(mpegts_table) mt_link;
+  RB_HEAD(,mpegts_psi_table_state) mt_state;
+
+  char   *mt_name;
+  void   *mt_opaque;
+
+  uint8_t mt_table; // SI table id (base)
+  uint8_t mt_mask;  //              mask
+
+  int     mt_pid;
+
+  int     mt_complete;
+  int     mt_incomplete;
+  uint8_t mt_finished;
+
+  mpegts_psi_section_t mt_sect;
+
+  tvhlog_limit_t mt_err_log;
+
+} mpegts_psi_table_t;
+
+/*
+ * Assemble SI section
+ */
+void mpegts_psi_section_reassemble
+ ( mpegts_psi_table_t *mt, const uint8_t *tsb, int crc,
+   mpegts_psi_section_callback_t cb, void *opaque );
+
+/* PSI table parser helpers */
 
 int dvb_table_end
-  (struct mpegts_table *mt, struct mpegts_table_state *st, int sect );
+  (mpegts_psi_table_t *mt, mpegts_psi_table_state_t *st, int sect );
 int dvb_table_begin
-  (struct mpegts_table *mt, const uint8_t *ptr, int len,
+  (mpegts_psi_table_t *mt, const uint8_t *ptr, int len,
    int tableid, uint64_t extraid, int minlen,
-   struct mpegts_table_state **st, int *sect, int *last, int *ver);
-void dvb_table_reset
-  (struct mpegts_table *mt);
-void dvb_bat_destroy
-  (struct mpegts_table *mt);
+   mpegts_psi_table_state_t **st, int *sect, int *last, int *ver);
+void dvb_table_reset (mpegts_psi_table_t *mt);
+void dvb_table_release (mpegts_psi_table_t *mt);
 
-int dvb_pat_callback
-  (struct mpegts_table *mt, const uint8_t *ptr, int len, int tableid);
-int dvb_cat_callback
-  (struct mpegts_table *mt, const uint8_t *ptr, int len, int tableid);
-int dvb_pmt_callback  
-  (struct mpegts_table *mt, const uint8_t *ptr, int len, int tabelid);
-int dvb_nit_callback
-  (struct mpegts_table *mt, const uint8_t *ptr, int len, int tableid);
-int dvb_bat_callback  
-  (struct mpegts_table *mt, const uint8_t *ptr, int len, int tableid);
-int dvb_fs_sdt_callback
-  (struct mpegts_table *mt, const uint8_t *ptr, int len, int tableid);
-int dvb_sdt_callback
-  (struct mpegts_table *mt, const uint8_t *ptr, int len, int tableid);
-int dvb_tdt_callback
-  (struct mpegts_table *mt, const uint8_t *ptr, int len, int tableid);
-int atsc_vct_callback
-  (struct mpegts_table *mt, const uint8_t *ptr, int len, int tableid);
+/* all-in-one parser */
 
-void psi_tables_default ( struct mpegts_mux *mm );
-void psi_tables_dvb     ( struct mpegts_mux *mm );
-void psi_tables_atsc_t  ( struct mpegts_mux *mm );
-void psi_tables_atsc_c  ( struct mpegts_mux *mm );
+typedef void (*mpegts_psi_parse_callback_t)
+  ( mpegts_psi_table_t *, const uint8_t *buf, int len );
+
+void dvb_table_parse_init
+  ( mpegts_psi_table_t *mt, const char *name, int pid, void *opaque );
+
+void dvb_table_parse_done ( mpegts_psi_table_t *mt);
+
+void dvb_table_parse
+  (mpegts_psi_table_t *mt, const uint8_t *tsb, int len,
+   int crc, int full, mpegts_psi_parse_callback_t cb);
+
+int dvb_table_append_crc32(uint8_t *dst, int off, int maxlen);
+
+int dvb_table_remux
+  (mpegts_psi_table_t *mt, const uint8_t *buf, int len, uint8_t **out);
 
 extern htsmsg_t *satellites;
 

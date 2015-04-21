@@ -1204,7 +1204,7 @@ dobackup(const char *oldver)
   }
 
   snprintf(outfile, sizeof(outfile), "%s/backup", root);
-  if (makedirs(outfile, 0700))
+  if (makedirs(outfile, 0700, -1, -1))
     goto fatal;
   if (chdir(root)) {
     tvherror("config", "unable to find directory '%s'", root);
@@ -1364,24 +1364,29 @@ config_check ( void )
  * Initialisation / Shutdown / Saving
  * *************************************************************************/
 
+static int config_newcfg = 0;
+
 void
-config_init ( const char *path, int backup )
+config_boot ( const char *path, gid_t gid, uid_t uid )
 {
   struct stat st;
   char buf[1024];
-  const char *homedir = getenv("HOME");
-  int new = 0;
 
   /* Generate default */
   if (!path) {
+    const char *homedir = getenv("HOME");
+    if (homedir == NULL) {
+      tvherror("START", "environment variable HOME is not set");
+      exit(EXIT_FAILURE);
+    }
     snprintf(buf, sizeof(buf), "%s/.hts/tvheadend", homedir);
     path = buf;
   }
 
   /* Ensure directory exists */
   if (stat(path, &st)) {
-    new = 1;
-    if (makedirs(path, 0700)) {
+    config_newcfg = 1;
+    if (makedirs(path, 0700, gid, uid)) {
       tvhwarn("START", "failed to create settings directory %s,"
                        " settings will not be saved", path);
       return;
@@ -1405,15 +1410,32 @@ config_init ( const char *path, int backup )
   if ((config_lock_fd = file_lock(config_lock, 3)) < 0)
     exit(78); /* config error */
 
+  if (chown(config_lock, uid, gid))
+    tvhwarn("config", "unable to chown lock file %s UID:%d GID:%d", config_lock, uid, gid);
+
   /* Load global settings */
   config = hts_settings_load("config");
   if (!config) {
     tvhlog(LOG_DEBUG, "config", "no configuration, loading defaults");
     config = htsmsg_create_map();
   }
+}
+
+void
+config_init ( int backup )
+{
+  const char *path = hts_settings_get_root();
+
+  if (access(path, R_OK | W_OK)) {
+    tvhwarn("START", "configuration path %s is not r/w"
+                     " for UID:%d GID:%d [e=%s],"
+                     " settings will not be saved",
+            path, getuid(), getgid(), strerror(errno));
+    return;
+  }
 
   /* Store version number */
-  if (new) {
+  if (config_newcfg) {
     htsmsg_set_u32(config, "version", ARRAY_SIZE(config_migrate_table));
     htsmsg_set_str(config, "fullversion", tvheadend_version);
     config_save();
@@ -1423,6 +1445,7 @@ config_init ( const char *path, int backup )
     if (config_migrate(backup))
       config_check();
   }
+  tvhinfo("config", "loaded");
 }
 
 void config_done ( void )
@@ -1446,13 +1469,39 @@ htsmsg_t *config_get_all ( void )
   return htsmsg_copy(config);
 }
 
-static int
-_config_set_str ( const char *fld, const char *val )
+const char *
+config_get_str ( const char *fld )
+{
+  return htsmsg_get_str(config, fld);
+}
+
+int
+config_set_str ( const char *fld, const char *val )
 {
   const char *c = htsmsg_get_str(config, fld);
   if (!c || strcmp(c, val)) {
     if (c) htsmsg_delete_field(config, fld);
     htsmsg_add_str(config, fld, val);
+    return 1;
+  }
+  return 0;
+}
+
+int
+config_get_int ( const char *fld, int deflt )
+{
+  return htsmsg_get_s32_or_default(config, fld, deflt);
+}
+
+int
+config_set_int ( const char *fld, int val )
+{
+  const char *c = htsmsg_get_str(config, fld);
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%d", val);
+  if (!c || strcmp(c, buf)) {
+    if (c) htsmsg_delete_field(config, fld);
+    htsmsg_add_s32(config, fld, val);
     return 1;
   }
   return 0;
@@ -1465,7 +1514,7 @@ const char *config_get_language ( void )
 
 int config_set_language ( const char *lang )
 {
-  return _config_set_str("language", lang);
+  return config_set_str("language", lang);
 }
 
 const char *config_get_muxconfpath ( void )
@@ -1475,7 +1524,7 @@ const char *config_get_muxconfpath ( void )
 
 int config_set_muxconfpath ( const char *path )
 {
-  return _config_set_str("muxconfpath", path);
+  return config_set_str("muxconfpath", path);
 }
 
 int config_get_prefer_picon ( void )
@@ -1487,7 +1536,7 @@ int config_get_prefer_picon ( void )
 
 int config_set_prefer_picon ( const char *str )
 {
-  return _config_set_str("prefer_picon", str);
+  return config_set_str("prefer_picon", str);
 }
 
 const char *config_get_chicon_path ( void )
@@ -1497,7 +1546,7 @@ const char *config_get_chicon_path ( void )
 
 int config_set_chicon_path ( const char *str )
 {
-  return _config_set_str("chiconpath", str);
+  return config_set_str("chiconpath", str);
 }
 
 const char *config_get_picon_path ( void )
@@ -1507,5 +1556,5 @@ const char *config_get_picon_path ( void )
 
 int config_set_picon_path ( const char *str )
 {
-  return _config_set_str("piconpath", str);
+  return config_set_str("piconpath", str);
 }

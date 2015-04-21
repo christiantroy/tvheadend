@@ -812,6 +812,8 @@ capmt_send_client_info(capmt_t *capmt)
   *(uint32_t *)(buf + 0) = htonl(DVBAPI_CLIENT_INFO);
   *(uint16_t *)(buf + 4) = htons(DVBAPI_PROTOCOL_VERSION); //supported protocol version
   int len = snprintf(buf + 7, sizeof(buf) - 7, "Tvheadend %s", tvheadend_version);
+  if (len >= sizeof(buf) - 7)
+    len = sizeof(buf) - 7 - 1;
   buf[6] = len;
 
   capmt_queue_msg(capmt, 0, 0, (uint8_t *)&buf, len + 7, CAPMT_MSG_FAST);
@@ -1368,7 +1370,7 @@ handle_single(capmt_t *capmt)
        }
         if (adapter < MAX_CA) {
           cmd_size = capmt_msg_size(capmt, &buffer, offset);
-          if (cmd_size >= 0)
+          if (cmd_size > 0)
             break;
         }
         sbuf_cut(&buffer, 1);
@@ -1793,11 +1795,13 @@ capmt_send_request(capmt_service_t *ct, int lm)
     }
     memcpy(&buf[pos], &cad, cad.cad_length + 2);
     pos += cad.cad_length + 2;
-    tvhlog(LOG_DEBUG, "capmt", "%s: adding ECMPID=0x%X (%d), CAID=0x%X (%d) PROVID=0x%X (%d)",
+    tvhlog(LOG_DEBUG, "capmt", "%s: adding ECMPID=0x%X (%d), "
+                      "CAID=0x%X (%d) PROVID=0x%X (%d), SID=%d, ADAPTER=%d",
       capmt_name(capmt),
       cce2->cce_ecmpid, cce2->cce_ecmpid,
       cce2->cce_caid, cce2->cce_caid,
-      cce2->cce_providerid, cce2->cce_providerid);
+      cce2->cce_providerid, cce2->cce_providerid,
+      sid, adapter_num);
   }
 
   uint8_t end[] = { 

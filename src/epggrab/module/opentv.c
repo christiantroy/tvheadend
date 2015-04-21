@@ -214,7 +214,9 @@ static int _opentv_parse_event_record
    time_t mjd )
 {
   uint8_t rtag = buf[0];
-  uint8_t rlen = buf[1];
+  int rlen = buf[1];
+  if (rlen+2 > len)
+    return -1;
   if (rlen+2 <= len) {
     switch (rtag) {
       case 0xb5: // title
@@ -226,8 +228,13 @@ static int _opentv_parse_event_record
           ev->cat         = buf[6];
           if (prov->genre)
             ev->cat = prov->genre->map[ev->cat];
-          if (!ev->title)
+          if (!ev->title) {
             ev->title     = _opentv_parse_string(prov, buf+9, rlen-7);
+            if (!strcmp(prov->dict->id, "skynz")) {
+              if ((strlen(ev->title) >= 6) && (ev->title[0] == '[') && (ev->title[1] == '[') && (ev->title[4] == ']') && (ev->title[5] == ']'))
+		memmove(ev->title,ev->title+6,strlen(ev->title)-5);
+	    }
+	  }
         }
         break;
       case 0xb9: // summary
@@ -256,13 +263,21 @@ static int _opentv_parse_event
     opentv_event_t *ev )
 {
   int      slen = (((int)buf[2] & 0xf) << 8) | buf[3];
-  int      i    = 4;
+  int      i    = 4, r;
+
+  if (slen+4 > len) {
+    tvhtrace("opentv", "event len (%d) > table len (%d)", slen+4, len);
+    return -1;
+  }
 
   ev->eid = ((uint16_t)buf[0] << 8) | buf[1];
 
   /* Process records */ 
   while (i < slen+4) {
-    i += _opentv_parse_event_record(prov, ev, buf+i, len-i, mjd);
+    r = _opentv_parse_event_record(prov, ev, buf+i, len-i, mjd);
+    if (r < 0)
+      return -1;
+    i += r;
   }
   return slen+4;
 }
@@ -296,7 +311,7 @@ opentv_parse_event_section
   ( opentv_status_t *sta, int cid, int mjd,
     const uint8_t *buf, int len )
 {
-  int i, save = 0;
+  int i, r, save = 0;
   opentv_module_t  *mod = sta->os_mod;
   epggrab_module_t *src = (epggrab_module_t*)mod;
   epggrab_channel_t *ec;
@@ -310,6 +325,7 @@ opentv_parse_event_section
   /* Get language (bit of a hack) */
   if      (!strcmp(mod->dict->id, "skyit"))  lang = "it";
   else if (!strcmp(mod->dict->id, "skyeng")) lang = "eng";
+  else if (!strcmp(mod->dict->id, "skynz")) lang = "eng";
 
   /* Channel */
   if (!(ec = _opentv_find_epggrab_channel(mod, cid, 0, NULL))) return 0;
@@ -319,8 +335,9 @@ opentv_parse_event_section
   i = 7;
   while (i < len) {
     memset(&ev, 0, sizeof(opentv_event_t));
-    i += _opentv_parse_event(mod, sta, buf+i, len-i, cid, mjd,
-                             &ev);
+    r = _opentv_parse_event(mod, sta, buf+i, len-i, cid, mjd, &ev);
+    if (r < 0) break;
+    i += r;
 
     /*
      * Broadcast
@@ -498,7 +515,7 @@ skip_chnum:
       
       if (!ecl)
         epggrab_channel_link(ec, ch);
-      save |= epggrab_channel_set_number(ec, cnum);
+      save |= epggrab_channel_set_number(ec, cnum, 0);
     }
     i += 9;
   }
@@ -512,7 +529,7 @@ opentv_table_callback
 {
   int r = 1, cid, mjd;
   int sect, last, ver;
-  mpegts_table_state_t *st;
+  mpegts_psi_table_state_t *st;
   opentv_status_t *sta = mt->mt_opaque;
   opentv_module_t *mod = sta->os_mod;
   epggrab_ota_mux_t *ota = sta->os_ota;
@@ -526,7 +543,8 @@ opentv_table_callback
   mjd = (mjd - 40587) * 86400;
 
   /* Begin */
-  r = dvb_table_begin(mt, buf, len, tableid, (uint64_t)cid << 32 | mjd, 7,
+  r = dvb_table_begin((mpegts_psi_table_t *)mt, buf, len,
+                      tableid, (uint64_t)cid << 32 | mjd, 7,
                       &st, &sect, &last, &ver);
   if (r != 1) goto done;
 
@@ -534,7 +552,7 @@ opentv_table_callback
   r = opentv_parse_event_section(sta, cid, mjd, buf, len);
 
   /* End */
-  r = dvb_table_end(mt, st, sect);
+  r = dvb_table_end((mpegts_psi_table_t *)mt, st, sect);
 
   /* Complete */
 done:
@@ -701,12 +719,15 @@ static void _opentv_compile_pattern_list ( opentv_pattern_list_t *list, htsmsg_t
 { 
   opentv_pattern_t *pattern;
   htsmsg_field_t *f;
+  const char *s;
 
   TAILQ_INIT(list);
   if (!l) return;
   HTSMSG_FOREACH(f, l) {
+    s = htsmsg_field_get_str(f);
+    if (s == NULL) continue;
     pattern = calloc(1, sizeof(opentv_pattern_t));
-    pattern->text = strdup(htsmsg_field_get_str(f));
+    pattern->text = strdup(s);
     if (regcomp(&pattern->compiled, pattern->text, REG_EXTENDED)) {
       tvhlog(LOG_WARNING, "opentv", "error compiling pattern \"%s\"", pattern->text);
       free(pattern->text);

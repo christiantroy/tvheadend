@@ -33,8 +33,11 @@ rtsp_send( http_client_t *hc, http_cmd_t cmd,
            http_arg_list_t *hdr )
 {
   http_arg_list_t h;
-  size_t blen = 7 + strlen(hc->hc_host) + (path ? strlen(path) : 1) + 1;
+  size_t blen = 7 + strlen(hc->hc_host) +
+                (hc->hc_port != 554 ? 7 : 0) +
+                (path ? strlen(path) : 1) + 1;
   char *buf = alloca(blen);
+  char buf2[7];
 
   if (hc->hc_rtsp_session) {
     if (hdr == NULL) {
@@ -43,7 +46,11 @@ rtsp_send( http_client_t *hc, http_cmd_t cmd,
     }
     http_arg_set(hdr, "Session", hc->hc_rtsp_session);
   }
-  snprintf(buf, blen, "rtsp://%s%s", hc->hc_host, path ? path : "/");
+  if (hc->hc_port != 554)
+    snprintf(buf2, sizeof(buf2), ":%d", hc->hc_port);
+  else
+    buf2[0] = '\0';
+  snprintf(buf, blen, "rtsp://%s%s%s", hc->hc_host, buf2, path ? path : "/");
   return http_client_send(hc, cmd, buf, query, hdr, NULL, 0);
 }
 
@@ -72,6 +79,8 @@ rtsp_options_decode( http_client_t *hc )
   int i, n, what = 0;
 
   p = http_arg_get(&hc->hc_args, "Public");
+  if (p == NULL)
+    return -EIO;
   n = http_tokenize(p, argv, 32, ',');
   for (i = 1; i < n; i++) {
     if (strcmp(argv[i], "DESCRIBE") == 0)

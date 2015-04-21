@@ -10,6 +10,7 @@
 # ###########################################################################
 
 ROOTDIR=$(cd "$(dirname "$0")"; pwd)
+test -z "$PKG_CONFIG" && PKG_CONFIG=pkg-config
 
 #
 # Options
@@ -19,8 +20,8 @@ OPTIONS=(
   "cwc:yes"
   "capmt:yes"
   "constcw:yes"
-  "v4l:no"
   "linuxdvb:yes"
+  "satip_server:yes"
   "satip_client:yes"
   "hdhomerun_client:auto"
   "hdhomerun_static:no"
@@ -34,6 +35,7 @@ OPTIONS=(
   "zlib:auto"
   "libav:auto"
   "libffmpeg_static:no"
+  "libffmpeg_static_x264:yes"
   "inotify:auto"
   "epoll:auto"
   "uriparser:auto"
@@ -41,6 +43,7 @@ OPTIONS=(
   "tvhcsa:auto"
   "bundle:no"
   "dvbcsa:no"
+  "dvben50221:auto"
   "kqueue:no"
   "dbus_1:auto"
   "android:no"
@@ -173,6 +176,18 @@ int test(void)
 }
 '
 
+check_cc_snippet sendmmsg '
+#define _GNU_SOURCE
+#include <stdlib.h>
+#include <sys/socket.h>
+#define TEST test
+int test(void)
+{
+  sendmmsg(0, NULL, 0, 0);
+  return 0;
+}
+'
+
 check_cc_snippet libiconv '
 #include <iconv.h>
 int test(void)
@@ -181,6 +196,23 @@ int test(void)
   return 0;
 }
 ' -liconv
+
+if enabled_or_auto dvben50221; then
+  check_cc_snippet libdvben50221 '
+  #include <libdvben50221/en50221_session.h>
+  #define TEST test
+  int test(void)
+  {
+    struct en50221_transport_layer *tl = en50221_tl_create(5, 32);
+    return 0;
+  }
+  ' '-ldvben50221 -ldvbapi -lucsi'
+  if enabled libdvben50221; then
+    enable dvben50221
+  else
+    disable dvben50221
+  fi
+fi
 
 #
 # Python
@@ -258,6 +290,13 @@ if enabled_or_auto zlib; then
 fi
 
 #
+# SAT>IP server
+#
+if enabled_or_auto satip_server; then
+  enable upnp
+fi
+
+#
 # SAT>IP client
 #
 if enabled_or_auto satip_client; then
@@ -308,7 +347,8 @@ else
   if enabled_or_auto libav; then
     has_libav=true
 
-    ffmpeg=$(pkg-config --modversion libavcodec | cut -d '.' -f 3)
+    ffmpeg=$(${PKG_CONFIG} --modversion libavcodec | cut -d '.' -f 3)
+    test -z "$ffmpeg" && ffmpeg=0
     printf "$TAB" "checking for ffmpeg libraries ..."
     if test $ffmpeg -lt 100; then
       ffmpeg=
@@ -411,6 +451,14 @@ if enabled cwc || enabled capmt || enabled constcw; then
 fi
 
 #
+# libdvben50221
+#
+if enabled libdvben50221; then
+  LDFLAGS="$LDFLAGS -ldvben50221 -ldvbapi -lucsi"
+  enable linuxdvb_ca
+fi
+
+#
 # Icon caching
 #
 if enabled_or_auto imagecache; then
@@ -445,21 +493,17 @@ if [ ${PLATFORM} = "freebsd" ] || [ ${PLATFORM} = "darwin" ]; then
 fi
 
 #
-# MPEGTS/PS support
+# MPEGTS support
 #
 disable mpegts
-disable mpegps
 disable mpegts_dvb
-if enabled linuxdvb || enabled iptv || enabled tsfile || enabled satip_client || enabled hdhomerun_client;
+if enabled linuxdvb || enabled iptv || enabled tsfile || enabled satip_client || \
+   enabled hdhomerun_client || enabled satip_server;
 then
   enable mpegts
 fi
-if enabled linuxdvb || enabled satip_client || enabled hdhomerun_client; then
+if enabled linuxdvb || enabled satip_client || enabled hdhomerun_client || enabled satip_server; then
   enable mpegts_dvb
-fi
-
-if enabled v4l; then
-  enable mpegps
 fi
 
 #

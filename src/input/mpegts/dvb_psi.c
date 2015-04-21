@@ -1,6 +1,6 @@
 /*
  *  MPEG TS Program Specific Information code
- *  Copyright (C) 2007 - 2010 Andreas �man
+ *  Copyright (C) 2007 - 2010 Andreas Öman
  *
  *  This program is free software: you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@
 #include "dvb_charset.h"
 #include "bouquet.h"
 #include "fastscan.h"
+#include "descrambler/dvbcam.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -81,43 +82,10 @@ typedef struct dvb_bat {
   LIST_HEAD(,dvb_bat_id)          bats;
 } dvb_bat_t;
 
-SKEL_DECLARE(mpegts_table_state_skel, struct mpegts_table_state);
-
 int dvb_bouquets_parse = 1;
 
 static int
 psi_parse_pmt(mpegts_mux_t *mux, mpegts_service_t *t, const uint8_t *ptr, int len);
-
-/* **************************************************************************
- * Lookup tables
- * *************************************************************************/
-
-static const int dvb_servicetype_map[][2] = {
-  { 0x01, ST_SDTV  }, /* SDTV (MPEG2) */
-  { 0x02, ST_RADIO }, 
-  { 0x11, ST_HDTV  }, /* HDTV (MPEG2) */
-  { 0x16, ST_SDTV  }, /* Advanced codec SDTV */
-  { 0x19, ST_HDTV  }, /* Advanced codec HDTV */
-  { 0x80, ST_SDTV  }, /* NET POA - Cabo SDTV */
-  { 0x91, ST_HDTV  }, /* Bell TV HDTV */
-  { 0x96, ST_SDTV  }, /* Bell TV SDTV */
-  { 0xA0, ST_HDTV  }, /* Bell TV tiered HDTV */
-  { 0xA4, ST_HDTV  }, /* DN HDTV */
-  { 0xA6, ST_HDTV  }, /* Bell TV tiered HDTV */
-  { 0xA8, ST_SDTV  }, /* DN advanced SDTV */
-  { 0xD3, ST_SDTV  }, /* SKY TV SDTV */
-};
-
-int
-dvb_servicetype_lookup ( int t )
-{
-  int i;
-  for (i = 0; i < ARRAY_SIZE(dvb_servicetype_map); i++) {
-    if (dvb_servicetype_map[i][0] == t)
-      return dvb_servicetype_map[i][1];
-  }
-  return -1;
-}
 
 static inline int
 mpegts_mux_alive(mpegts_mux_t *mm)
@@ -273,7 +241,7 @@ dvb_desc_sat_del
   tvhdebug(mt->mt_name, "    %s", buf);
 
   /* Create */
-  return mm->mm_network->mn_create_mux(mm, onid, tsid, &dmc, force);
+  return mm->mm_network->mn_create_mux(mm->mm_network, mm, onid, tsid, &dmc, force);
 }
 
 /*
@@ -329,7 +297,7 @@ dvb_desc_cable_del
   tvhdebug(mt->mt_name, "    %s", buf);
 
   /* Create */
-  return mm->mm_network->mn_create_mux(mm, onid, tsid, &dmc, 0);
+  return mm->mm_network->mn_create_mux(mm->mm_network, mm, onid, tsid, &dmc, 0);
 }
 
 /*
@@ -395,7 +363,7 @@ dvb_desc_terr_del
   tvhdebug(mt->mt_name, "    %s", buf);
   
   /* Create */
-  return mm->mm_network->mn_create_mux(mm, onid, tsid, &dmc, 0);
+  return mm->mm_network->mn_create_mux(mm->mm_network, mm, onid, tsid, &dmc, 0);
 }
  
 #endif /* ENABLE_MPEGTS_DVB */
@@ -871,199 +839,6 @@ dvb_bskyb_local_channels
 
 #endif /* ENABLE_MPEGTS_DVB */
 
-/* **************************************************************************
- * Tables
- * *************************************************************************/
-
-static int sect_cmp
-  ( struct mpegts_table_state *a, struct mpegts_table_state *b )
-{
-  if (a->tableid != b->tableid)
-    return a->tableid - b->tableid;
-  if (a->extraid < b->extraid)
-    return -1;
-  if (a->extraid > b->extraid)
-    return 1;
-  return 0;
-}
-
-static void
-mpegts_table_state_reset
-  ( mpegts_table_t *mt, mpegts_table_state_t *st, int last )
-{
-  int i;
-  mt->mt_finished = 0;
-  st->complete = 0;
-  st->version = 0xff;  /* invalid */
-  memset(st->sections, 0, sizeof(st->sections));
-  for (i = 0; i < last / 32; i++)
-    st->sections[i] = 0xFFFFFFFF;
-  st->sections[last / 32] = 0xFFFFFFFF << (31 - (last % 32));
-}
-
-static struct mpegts_table_state *
-mpegts_table_state_find
-  ( mpegts_table_t *mt, int tableid, uint64_t extraid, int last )
-{
-  struct mpegts_table_state *st;
-
-  /* Find state */
-  SKEL_ALLOC(mpegts_table_state_skel);
-  mpegts_table_state_skel->tableid = tableid;
-  mpegts_table_state_skel->extraid = extraid;
-  st = RB_INSERT_SORTED(&mt->mt_state, mpegts_table_state_skel, link, sect_cmp);
-  if (!st) {
-    st   = mpegts_table_state_skel;
-    SKEL_USED(mpegts_table_state_skel);
-    mt->mt_incomplete++;
-    mpegts_table_state_reset(mt, st, last);
-  }
-  return st;
-}
-
-/*
- * End table
- */
-static int
-dvb_table_complete
-  (mpegts_table_t *mt)
-{
-  if (mt->mt_incomplete || !mt->mt_complete) {
-    int total = 0;
-    mpegts_table_state_t *st;
-    RB_FOREACH(st, &mt->mt_state, link)
-      total++;
-    tvhtrace(mt->mt_name, "incomplete %d complete %d total %d",
-             mt->mt_incomplete, mt->mt_complete, total);
-    return 2;
-  }
-  if (!mt->mt_finished)
-    tvhdebug(mt->mt_name, "completed pid %d table %08X / %08x", mt->mt_pid, mt->mt_table, mt->mt_mask);
-  mt->mt_finished = 1;
-  return 0;
-}
-
-int
-dvb_table_end
-  (mpegts_table_t *mt, mpegts_table_state_t *st, int sect)
-{
-  int sa, sb;
-  uint32_t rem;
-  if (st && !st->complete) {
-    assert(sect >= 0 && sect <= 255);
-    sa = sect / 32;
-    sb = sect % 32;
-    st->sections[sa] &= ~(0x1 << (31 - sb));
-    if (!st->sections[sa]) {
-      rem = 0;
-      for (sa = 0; sa < 8; sa++)
-        rem |= st->sections[sa];
-      if (rem) return 1;
-      tvhtrace(mt->mt_name, "  tableid %02X extraid %016" PRIx64 " completed",
-               st->tableid, st->extraid);
-      st->complete = 1;
-      mt->mt_incomplete--;
-      return dvb_table_complete(mt);
-    }
-  } else if (st)
-    return dvb_table_complete(mt);
-  return 2;
-}
-
-/*
- * Begin table
- */
-int
-dvb_table_begin
-  (mpegts_table_t *mt, const uint8_t *ptr, int len,
-   int tableid, uint64_t extraid, int minlen,
-   mpegts_table_state_t **ret, int *sect, int *last, int *ver)
-{
-  mpegts_table_state_t *st;
-  uint32_t sa, sb;
-
-  /* Not long enough */
-  if (len < minlen) {
-    tvhdebug(mt->mt_name, "invalid table length %d min %d", len, minlen);
-    return -1;
-  }
-
-  /* Ignore next */
-  if((ptr[2] & 1) == 0)
-    return -1;
-
-  tvhtrace(mt->mt_name, "pid %02X tableid %02X extraid %016" PRIx64 " len %d",
-           mt->mt_pid, tableid, extraid, len);
-
-  /* Section info */
-  if (sect && ret) {
-    *sect = ptr[3];
-    *last = ptr[4];
-    *ver  = (ptr[2] >> 1) & 0x1F;
-    *ret = st = mpegts_table_state_find(mt, tableid, extraid, *last);
-    tvhtrace(mt->mt_name, "  section %d last %d ver %d (ver %d st %d incomp %d comp %d)",
-             *sect, *last, *ver, st->version, st->complete, mt->mt_incomplete, mt->mt_complete);
-
-    /* Ignore previous version */
-    /* This check is for the broken PMT tables where:
-     * last 0 version 21 = PCR + Audio PID 0x0044
-     * last 0 version 22 = Audio PID 0x0044, PCR + Video PID 0x0045
-     */
-    if (*last == 0 && st->version - 1 == *ver)
-      return -1;
-
-    /* New version */
-    if (st->version != *ver) {
-      if (st->complete == 2)
-        mt->mt_complete--;
-      if (st->complete)
-        mt->mt_incomplete++;
-      tvhtrace(mt->mt_name, "  new version, restart");
-      mpegts_table_state_reset(mt, st, *last);
-      st->version = *ver;
-    }
-
-    /* Complete? */
-    if (st->complete) {
-      tvhtrace(mt->mt_name, "  skip, already complete (%i)", st->complete);
-      if (st->complete == 1) {
-        st->complete = 2;
-        mt->mt_complete++;
-        return dvb_table_complete(mt);
-      } else if (st->complete == 2) {
-        return dvb_table_complete(mt);
-      }
-      assert(0);
-    }
-
-    /* Already seen? */
-    sa = *sect / 32;
-    sb = *sect % 32;
-    if (!(st->sections[sa] & (0x1 << (31 - sb)))) {
-      tvhtrace(mt->mt_name, "  skip, already seen");
-      return -1;
-    }
-  }
-
-  tvhlog_hexdump(mt->mt_name, ptr, len);
-
-  return 1;
-}
-
-void
-dvb_table_reset(mpegts_table_t *mt)
-{
-  mpegts_table_state_t *st;
-
-  tvhtrace(mt->mt_name, "pid %02X complete reset", mt->mt_pid);
-  mt->mt_incomplete = 0;
-  mt->mt_complete   = 0;
-  while ((st = RB_FIRST(&mt->mt_state)) != NULL) {
-    RB_REMOVE(&mt->mt_state, st, link);
-    free(st);
-  }
-}
-
 /*
  * PAT processing
  */
@@ -1074,15 +849,15 @@ dvb_pat_callback
   int r, sect, last, ver;
   uint16_t sid, pid, tsid;
   uint16_t nit_pid = 0;
-  mpegts_mux_t          *mm  = mt->mt_mux;
-  mpegts_table_state_t  *st  = NULL;
+  mpegts_mux_t             *mm  = mt->mt_mux;
+  mpegts_psi_table_state_t *st  = NULL;
   mpegts_service_t *s;
 
   /* Begin */
   if (tableid != 0) return -1;
   tsid = (ptr[0] << 8) | ptr[1];
-  r    = dvb_table_begin(mt, ptr, len, tableid, tsid, 5,
-                         &st, &sect, &last, &ver);
+  r    = dvb_table_begin((mpegts_psi_table_t *)mt, ptr, len,
+                         tableid, tsid, 5, &st, &sect, &last, &ver);
   if (r != 1) return r;
 
   /* Multiplex */
@@ -1133,7 +908,7 @@ dvb_pat_callback
                      NULL, "nit", MT_QUICKREQ | MT_CRC, nit_pid);
 
   /* End */
-  return dvb_table_end(mt, st, sect);
+  return dvb_table_end((mpegts_psi_table_t *)mt, st, sect);
 }
 
 /*
@@ -1147,11 +922,12 @@ dvb_cat_callback
   uint8_t dtag, dlen;
   uint16_t pid; 
   uintptr_t caid;
-  mpegts_mux_t          *mm  = mt->mt_mux;
-  mpegts_table_state_t  *st  = NULL;
+  mpegts_mux_t             *mm  = mt->mt_mux;
+  mpegts_psi_table_state_t *st  = NULL;
 
   /* Start */
-  r = dvb_table_begin(mt, ptr, len, tableid, 0, 5, &st, &sect, &last, &ver);
+  r = dvb_table_begin((mpegts_psi_table_t *)mt, ptr, len,
+                      tableid, 0, 5, &st, &sect, &last, &ver);
   if (r != 1) return r;
   ptr += 5;
   len -= 5;
@@ -1182,7 +958,7 @@ dvb_cat_callback
   }
 
   /* Finish */
-  return dvb_table_end(mt, st, sect);
+  return dvb_table_end((mpegts_psi_table_t *)mt, st, sect);
 }
 
 /*
@@ -1197,17 +973,22 @@ dvb_pmt_callback
   uint16_t sid;
   mpegts_mux_t *mm = mt->mt_mux;
   mpegts_service_t *s;
-  mpegts_table_state_t  *st  = NULL;
+  mpegts_psi_table_state_t *st  = NULL;
 
   /* Start */
   sid = ptr[0] << 8 | ptr[1];
-  r   = dvb_table_begin(mt, ptr, len, tableid, sid, 9, &st, &sect, &last, &ver);
+  r   = dvb_table_begin((mpegts_psi_table_t *)mt, ptr, len,
+                        tableid, sid, 9, &st, &sect, &last, &ver);
   if (r != 1) return r;
 
   /* Find service */
   LIST_FOREACH(s, &mm->mm_services, s_dvb_mux_link)
     if (s->s_dvb_service_id == sid) break;
   if (!s) return -1;
+
+#if ENABLE_LINUXDVB_CA
+  dvbcam_pmt_data(s, ptr, len);
+#endif
 
   /* Process */
   tvhdebug("pmt", "sid %04X (%d)", sid, sid);
@@ -1218,7 +999,7 @@ dvb_pmt_callback
     service_restart((service_t*)s);
 
   /* Finish */
-  return dvb_table_end(mt, st, sect);
+  return dvb_table_end((mpegts_psi_table_t *)mt, st, sect);
 }
 
 /*
@@ -1432,13 +1213,17 @@ dvb_nit_mux
       break;
     case 0x81:
       if (priv == 0) goto lcn;
+      break;
     case 0x82:
       if (priv == 0) goto lcn;
+      break;
     case 0x83:
       if (priv == 0 || priv == 0x28 || priv == 0x29 || priv == 0xa5 ||
           priv == 0x233A) goto lcn;
+      break;
     case 0x86:
       if (priv == 0) goto lcn;
+      break;
     case 0x88:
       if (priv == 0x28) {
         /* HD simulcast */
@@ -1481,9 +1266,7 @@ dvb_nit_callback
 {
   int save = 0;
   int r, sect, last, ver;
-#if ENABLE_MPEGTS_DVB
   uint32_t priv = 0;
-#endif
   uint8_t  dtag;
   int llen, dlen;
   const uint8_t *lptr, *dptr;
@@ -1491,7 +1274,7 @@ dvb_nit_callback
   mpegts_mux_t     *mm = mt->mt_mux, *mux;
   mpegts_network_t *mn = mm->mm_network;
   char name[256];
-  mpegts_table_state_t  *st  = NULL;
+  mpegts_psi_table_state_t *st  = NULL;
   const char *charset;
   bouquet_t *bq = NULL;
   dvb_bat_t *b = NULL;
@@ -1505,7 +1288,8 @@ dvb_nit_callback
       tableid != DVB_FASTSCAN_NIT_BASE)
     return -1;
 
-  r = dvb_table_begin(mt, ptr, len, tableid, nbid, 7, &st, &sect, &last, &ver);
+  r = dvb_table_begin((mpegts_psi_table_t *)mt, ptr, len,
+                      tableid, nbid, 7, &st, &sect, &last, &ver);
   if (r == 0) {
     if (tableid == 0x4A || tableid == DVB_FASTSCAN_NIT_BASE) {
       if ((b = mt->mt_bat) != NULL) {
@@ -1528,12 +1312,12 @@ dvb_nit_callback
     /* Specific NID */
     if (mn->mn_nid) {
       if (mn->mn_nid != nbid) {
-        return dvb_table_end(mt, st, sect);
+        return dvb_table_end((mpegts_psi_table_t *)mt, st, sect);
       }
   
     /* Only use "this" network */
     } else if (tableid != 0x40) {
-      return dvb_table_end(mt, st, sect);
+      return dvb_table_end((mpegts_psi_table_t *)mt, st, sect);
     }
   }
 
@@ -1650,7 +1434,7 @@ dvb_nit_callback
   }
 
   /* End */
-  return dvb_table_end(mt, st, sect);
+  return dvb_table_end((mpegts_psi_table_t *)mt, st, sect);
 }
 
 /**
@@ -1803,14 +1587,15 @@ dvb_sdt_callback
   uint16_t onid, tsid;
   mpegts_mux_t     *mm = mt->mt_mux, *mm_orig = mm;
   mpegts_network_t *mn = mm->mm_network;
-  mpegts_table_state_t  *st  = NULL;
+  mpegts_psi_table_state_t *st  = NULL;
 
   /* Begin */
   tsid    = ptr[0] << 8 | ptr[1];
   onid    = ptr[5] << 8 | ptr[6];
   extraid = ((int)onid) << 16 | tsid;
   if (tableid != 0x42 && tableid != 0x46) return -1;
-  r = dvb_table_begin(mt, ptr, len, tableid, extraid, 8, &st, &sect, &last, &ver);
+  r = dvb_table_begin((mpegts_psi_table_t *)mt, ptr, len,
+                      tableid, extraid, 8, &st, &sect, &last, &ver);
   if (r != 1) return r;
 
   /* ID */
@@ -1838,7 +1623,7 @@ dvb_sdt_callback
   }
 
   /* Done */
-  return dvb_table_end(mt, st, sect);
+  return dvb_table_end((mpegts_psi_table_t *)mt, st, sect);
 }
 
 /*
@@ -1856,7 +1641,7 @@ atsc_vct_callback
   mpegts_mux_t     *mm = mt->mt_mux, *mm_orig = mm;
   mpegts_network_t *mn = mm->mm_network;
   mpegts_service_t *s;
-  mpegts_table_state_t  *st  = NULL;
+  mpegts_psi_table_state_t *st  = NULL;
 
   /* Validate */
   if (tableid != 0xc8 && tableid != 0xc9) return -1;
@@ -1866,8 +1651,8 @@ atsc_vct_callback
   extraid = tsid;
 
   /* Begin */
-  r = dvb_table_begin(mt, ptr, len, tableid, extraid, 7,
-                      &st, &sect, &last, &ver);
+  r = dvb_table_begin((mpegts_psi_table_t *)mt, ptr, len,
+                      tableid, extraid, 7, &st, &sect, &last, &ver);
   if (r != 1) return r;
   tvhdebug("vct", "tsid %04X (%d)", tsid, tsid);
 
@@ -1925,7 +1710,7 @@ next:
     len -= dlen + 32;
   }
 
-  return dvb_table_end(mt, st, sect);
+  return dvb_table_end((mpegts_psi_table_t *)mt, st, sect);
 }
 
 
@@ -1942,7 +1727,7 @@ dvb_bat_callback
 #if ENABLE_MPEGTS_DVB
 static int
 dvb_fs_sdt_mux
-  ( mpegts_table_t *mt, mpegts_mux_t *mm, mpegts_table_state_t *st,
+  ( mpegts_table_t *mt, mpegts_mux_t *mm, mpegts_psi_table_state_t *st,
     const uint8_t *ptr, int len, int discovery )
 {
   uint16_t onid, tsid, service_id;
@@ -2081,7 +1866,7 @@ dvb_fs_sdt_callback
   int r, sect, last, ver;
   uint16_t nbid;
   mpegts_mux_t *mm = mt->mt_mux;
-  mpegts_table_state_t  *st  = NULL;
+  mpegts_psi_table_state_t *st  = NULL;
 
   /* Fastscan ID */
   nbid = (ptr[0] << 8) | ptr[1];
@@ -2089,7 +1874,8 @@ dvb_fs_sdt_callback
   /* Begin */
   if (tableid != 0xBD)
     return -1;
-  r = dvb_table_begin(mt, ptr, len, tableid, nbid, 7, &st, &sect, &last, &ver);
+  r = dvb_table_begin((mpegts_psi_table_t *)mt, ptr, len,
+                      tableid, nbid, 7, &st, &sect, &last, &ver);
   if (r == 0) {
     mt->mt_working -= st->working;
     st->working = 0;
@@ -2103,7 +1889,7 @@ dvb_fs_sdt_callback
   dvb_fs_sdt_mux(mt, mm, st, ptr, len, 0);
 
   /* End */
-  return dvb_table_end(mt, st, sect);
+  return dvb_table_end((mpegts_psi_table_t *)mt, st, sect);
 }
 #endif
 

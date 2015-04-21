@@ -164,6 +164,12 @@ SRCS =  src/version.c \
 SRCS-${CONFIG_UPNP} += \
 	src/upnp.c
 
+# SATIP Server
+SRCS-${CONFIG_SATIP_SERVER} += \
+	src/satip/server.c \
+	src/satip/rtsp.c \
+	src/satip/rtp.c
+
 SRCS += \
 	src/api.c \
 	src/api/api_status.c \
@@ -224,12 +230,15 @@ SRCS += src/muxer.c \
 # Optional code
 #
 
-# MPEGTS core
+# MPEGTS core, order by usage (psi lib, tsdemux)
 SRCS-$(CONFIG_MPEGTS) += \
 	src/descrambler/descrambler.c \
 	src/descrambler/caclient.c \
 	src/input/mpegts.c \
+	src/input/mpegts/mpegts_pid.c \
 	src/input/mpegts/mpegts_input.c \
+	src/input/mpegts/tsdemux.c \
+	src/input/mpegts/dvb_psi_lib.c \
 	src/input/mpegts/mpegts_network.c \
 	src/input/mpegts/mpegts_mux.c \
 	src/input/mpegts/mpegts_service.c \
@@ -238,9 +247,8 @@ SRCS-$(CONFIG_MPEGTS) += \
 	src/input/mpegts/dvb_charset.c \
 	src/input/mpegts/dvb_psi.c \
 	src/input/mpegts/fastscan.c \
-	src/input/mpegts/tsdemux.c \
 	src/input/mpegts/mpegts_mux_sched.c \
-  src/input/mpegts/mpegts_network_scan.c \
+        src/input/mpegts/mpegts_network_scan.c
 
 # MPEGTS DVB
 SRCS-${CONFIG_MPEGTS_DVB} += \
@@ -266,7 +274,7 @@ SRCS-${CONFIG_LINUXDVB} += \
         src/input/mpegts/linuxdvb/linuxdvb_rotor.c \
         src/input/mpegts/linuxdvb/linuxdvb_en50494.c
 
-# SATIP
+# SATIP Client
 SRCS-${CONFIG_SATIP_CLIENT} += \
 	src/input/mpegts/satip/satip.c \
 	src/input/mpegts/satip/satip_frontend.c \
@@ -333,6 +341,11 @@ SRCS-${CONFIG_CAPMT} += \
 # CONSTCW
 SRCS-${CONFIG_CONSTCW} += \
 	src/descrambler/constcw.c
+
+# DVB CAM
+SRCS-${CONFIG_LINUXDVB_CA} += \
+	src/input/mpegts/linuxdvb/linuxdvb_ca.c \
+	src/descrambler/dvbcam.c
 
 # TSDEBUGCW
 SRCS-${CONFIG_TSDEBUG} += \
@@ -467,7 +480,8 @@ ${BUILDDIR}/libffmpeg_stamp: ${ROOTDIR}/libav_static/build/ffmpeg/lib/libavcodec
 	@touch $@
 
 ${ROOTDIR}/libav_static/build/ffmpeg/lib/libavcodec.a:
-	$(MAKE) -f Makefile.ffmpeg build
+	CONFIG_LIBFFMPEG_STATIC_X264=$(CONFIG_LIBFFMPEG_STATIC_X264) \
+	  $(MAKE) -f Makefile.ffmpeg build
 
 # Static HDHOMERUN library
 

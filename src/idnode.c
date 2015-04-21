@@ -1011,7 +1011,7 @@ idnode_set_find_index
   return -1;
 }
 
-void
+int
 idnode_set_remove
   ( idnode_set_t *is, idnode_t *in )
 {
@@ -1020,7 +1020,9 @@ idnode_set_remove
     memmove(&is->is_array[i], &is->is_array[i+1],
             (is->is_count - i - 1) * sizeof(idnode_t *));
     is->is_count--;
+    return 1;
   }
+  return 0;
 }
 
 void
@@ -1440,11 +1442,13 @@ idnode_thread ( void *p )
     HTSMSG_FOREACH(f, q) {
       node  = idnode_find(f->hmf_name, NULL, NULL);
       event = htsmsg_field_get_str(f);
-      m     = htsmsg_create_map();
-      htsmsg_add_str(m, "uuid", f->hmf_name);
-      if (!node)
-        htsmsg_add_u32(m, "removed", 1);
-      notify_by_msg(event, m);
+      if (event) {
+        m     = htsmsg_create_map();
+        htsmsg_add_str(m, "uuid", f->hmf_name);
+        if (!node)
+          htsmsg_add_u32(m, "removed", 1);
+        notify_by_msg(event, m);
+      }
     }
     
     /* Finished */

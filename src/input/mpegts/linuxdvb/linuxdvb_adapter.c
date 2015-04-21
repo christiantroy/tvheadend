@@ -34,8 +34,10 @@
 #include <openssl/sha.h>
 
 #include <linux/dvb/frontend.h>
+#include <linux/dvb/ca.h>
 
 #define FE_PATH  "%s/frontend%d"
+#define CA_PATH  "%s/ca%d"
 #define DVR_PATH "%s/dvr%d"
 #define DMX_PATH "%s/demux%d"
 
@@ -162,7 +164,7 @@ linuxdvb_adapter_create
  *
  */
 static dvb_fe_type_t
-linux_dvb_get_type(int linux_type)
+linuxdvb_get_type(int linux_type)
 {
   switch (linux_type) {
   case FE_QPSK:
@@ -179,6 +181,43 @@ linux_dvb_get_type(int linux_type)
 }
 
 /*
+ *
+ */
+#if DVB_VER_ATLEAST(5,5)
+static void
+linuxdvb_get_systems(int fd, struct dtv_property *_cmd)
+{
+  struct dtv_property cmd = {
+    .cmd = DTV_ENUM_DELSYS
+  };
+  struct dtv_properties cmdseq = {
+    .num   = 1,
+    .props = &cmd
+  };
+  int r;
+
+  r = ioctl(fd, FE_GET_PROPERTY, &cmdseq);
+  if (!r && cmd.u.buffer.len) {
+    struct dtv_property fecmd[2] = {
+      {
+        .cmd    = DTV_DELIVERY_SYSTEM,
+        .u.data = cmd.u.buffer.data[0]
+      },
+      {
+        .cmd    = DTV_TUNE
+      }
+    };
+    cmdseq.props = fecmd;
+    cmdseq.num   = 2;
+    r = ioctl(fd, FE_SET_PROPERTY, &cmdseq);
+  } else {
+    cmd.u.buffer.len = 0;
+  }
+  *_cmd = cmd;
+}
+#endif
+
+/*
  * Add adapter by path
  */
 static void
@@ -188,6 +227,9 @@ linuxdvb_adapter_add ( const char *path )
   extern int linuxdvb_adapter_mask;
   int a, i, j, r, fd;
   char fe_path[512], dmx_path[512], dvr_path[512];
+#if ENABLE_LINUXDVB_CA
+  char ca_path[512];
+#endif
   tvh_uuid_t uuid;
   linuxdvb_adapter_t *la = NULL;
   struct dvb_frontend_info dfi;
@@ -198,14 +240,9 @@ linuxdvb_adapter_add ( const char *path )
   dvb_fe_type_t type;
 #if DVB_VER_ATLEAST(5,5)
   int delsys;
-  dvb_fe_type_t fetypes[DVB_TYPE_LAST+1] = { 0 };
-  struct dtv_property   cmd = {
-    .cmd = DTV_ENUM_DELSYS
-  };
-  struct dtv_properties cmdseq = {
-    .num   = 1,
-    .props = &cmd
-  };
+  dvb_fe_type_t fetypes[DVB_TYPE_LAST+1];
+  struct dtv_property cmd;
+  linuxdvb_frontend_t *lfe;
 #endif
 
   /* Validate the path */
@@ -243,23 +280,7 @@ linuxdvb_adapter_add ( const char *path )
       continue;
     }
 #if DVB_VER_ATLEAST(5,5)
-    r = ioctl(fd, FE_GET_PROPERTY, &cmdseq);
-    if (!r && cmd.u.buffer.len) {
-      struct dtv_property fecmd[2] = {
-        {
-          .cmd    = DTV_DELIVERY_SYSTEM,
-          .u.data = cmd.u.buffer.data[0]
-        },
-        {
-          .cmd    = DTV_TUNE
-        }
-      };
-      cmdseq.props = fecmd;
-      cmdseq.num   = 2;
-      r = ioctl(fd, FE_SET_PROPERTY, &cmdseq);
-    } else {
-      cmd.u.buffer.len = 0;
-    }
+    linuxdvb_get_systems(fd, &cmd);
 #endif
     r = ioctl(fd, FE_GET_INFO, &dfi);
     close(fd);
@@ -267,7 +288,7 @@ linuxdvb_adapter_add ( const char *path )
       tvhlog(LOG_ERR, "linuxdvb", "unable to query %s", fe_path);
       continue;
     }
-    type = linux_dvb_get_type(dfi.type);
+    type = linuxdvb_get_type(dfi.type);
     if (type == DVB_TYPE_NONE) {
       tvhlog(LOG_ERR, "linuxdvb", "unable to determine FE type %s - %i", fe_path, dfi.type);
       continue;
@@ -316,6 +337,7 @@ linuxdvb_adapter_add ( const char *path )
     /* Create frontend */
     linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path, type, dfi.name);
 #if DVB_VER_ATLEAST(5,5)
+    memset(fetypes, 0, sizeof(fetypes));
     fetypes[type] = 1;
     for (j = 0; j < cmd.u.buffer.len; j++) {
       delsys = cmd.u.buffer.data[j];
@@ -340,12 +362,53 @@ linuxdvb_adapter_add ( const char *path )
     pthread_mutex_unlock(&global_lock);
   }
 
+  /* Process each CA device */
+#if ENABLE_LINUXDVB_CA
+  for (i = 0; i < 32; i++) {
+    snprintf(ca_path, sizeof(ca_path), CA_PATH, path, i);
+    if (access(ca_path, R_OK | W_OK)) continue;
+
+    /* Get ca info */
+    for (j = 0; j < MAX_DEV_OPEN_ATTEMPTS; j++) {
+      if ((fd = tvh_open(ca_path, O_RDWR, 0)) >= 0) break;
+      usleep(100000);
+    }
+    if (fd < 0) {
+      tvhlog(LOG_ERR, "linuxdvb", "unable to open %s", ca_path);
+      continue;
+    }
+    r = ioctl(fd, CA_RESET, NULL);
+    close(fd);
+    if(r) {
+      tvhlog(LOG_ERR, "linuxdvb", "unable to query %s", ca_path);
+      continue;
+    }
+    if (!la)
+      continue;
+
+    pthread_mutex_lock(&global_lock);
+    linuxdvb_ca_create(la, i, ca_path);
+    pthread_mutex_unlock(&global_lock);
+  }
+#endif
+
   /* Cleanup */
   if (conf)
     htsmsg_destroy(conf);
 
   /* Relock before exit */
   pthread_mutex_lock(&global_lock);
+
+#if DVB_VER_ATLEAST(5,5)
+  memset(fetypes, 0, sizeof(fetypes));
+  LIST_FOREACH(lfe, &la->la_frontends, lfe_link)
+    fetypes[lfe->lfe_type]++;
+  for (i = 0; i < ARRAY_SIZE(fetypes); i++)
+    if (fetypes[i] > 1)
+      tvhwarn("linuxdvb", "adapter %d has multiple tuners %d for type %s, "
+                          "only one can be used at a time",
+                          a, fetypes[i], dvb_type2str(i));
+#endif
 
   /* Save configuration */
   if (save && la)

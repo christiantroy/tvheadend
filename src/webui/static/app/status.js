@@ -231,6 +231,33 @@ tvheadend.status_streams = function(panel, index)
         if (grid)
             return;
 
+        var actions = new Ext.ux.grid.RowActions({
+            header: '',
+            width: 10,
+            actions: [
+                {
+                    iconCls: 'undo',
+                    qtip: 'Clear statistics',
+                    cb: function(grid, rec, act, row) {
+                        var uuid = grid.getStore().getAt(row).data.uuid;
+                        Ext.MessageBox.confirm('Clear statistics',
+                            'Clear statistics for selected input?',
+                            function(button) {
+                                if (button === 'no')
+                                    return;
+                                Ext.Ajax.request({
+                                    url: 'api/status/inputclrstats',
+                                    params: { uuid: uuid }
+                                });
+                            }
+                       );
+                   }
+               },
+            ],
+            destroy: function() {
+            }
+        });
+
         store = new Ext.data.JsonStore({
             root: 'entries',
             totalProperty: 'totalCount',
@@ -288,6 +315,7 @@ tvheadend.status_streams = function(panel, index)
         }
 
         var cm = new Ext.grid.ColumnModel([
+            actions,
             {
                 width: 120,
                 header: "Input",
@@ -363,7 +391,7 @@ tvheadend.status_streams = function(panel, index)
                 if (scale == 1)
                   return v;
                 if (scale == 2 && v > 0) {
-                  var snr = v * 0.0001;
+                  var snr = v * 0.001;
                   return snr.toFixed(1) + " dB";
                 }
                 return '<span class="tvh-grid-unset">Unknown</span>';
@@ -382,8 +410,8 @@ tvheadend.status_streams = function(panel, index)
                 var scale = record.get('snr_scale');
                 if (scale == 1)
                   return v;
-                if (scale == 2 && v > 0) {
-                    var snr = v * 0.0001;
+                if (scale == 2) {
+                    var snr = v * 0.001;
                     return snr.toFixed(1) + " dBm";
                 }
                 return '<span class="tvh-grid-unset">Unknown</span>';
@@ -402,7 +430,8 @@ tvheadend.status_streams = function(panel, index)
             flex: 1,
             viewConfig: {
                 forceFit: true
-            }
+            },
+            plugins: [actions]
         });
         
         dpanel.add(grid);

@@ -44,9 +44,10 @@ tvheadend.miscconf = function(panel, index) {
         'muxconfpath', 'language',
         'tvhtime_update_enabled', 'tvhtime_ntp_enabled',
         'tvhtime_tolerance',
-        'prefer_picon',
-        'chiconpath',
-        'piconpath'
+        'prefer_picon', 'chiconpath', 'piconpath',
+        'satip_rtsp', 'satip_weight', 'satip_descramble', 'satip_muxcnf',
+        'satip_dvbs', 'satip_dvbs2', 'satip_dvbt', 'satip_dvbt2',
+        'satip_dvbc', 'satip_dvbc2', 'satip_atsc', 'satip_dvbcb'
     ]);
 
     /* ****************************************************************
@@ -216,6 +217,73 @@ tvheadend.miscconf = function(panel, index) {
         var imagecache_form = null;
     }
 
+    /*
+    * SAT>IP server
+    */
+
+    var satipPanel = null;
+    if (tvheadend.capabilities.indexOf('satip_server') !== -1) {
+        var rtsp = new Ext.form.NumberField({
+             name: 'satip_rtsp',
+             fieldLabel: 'RTSP Port (554 or 9983), 0 = disable'
+        });
+        var weight = new Ext.form.NumberField({
+             name: 'satip_weight',
+             fieldLabel: 'Subscription Weight'
+        });
+        var descramble = new Ext.form.NumberField({
+             name: 'satip_descramble',
+             fieldLabel: 'Descramble Services (Limit Per Mux)'
+        });
+        var muxcnf = new Ext.form.NumberField({
+             name: 'satip_muxcnf',
+             fieldLabel: 'Muxes Handling (0 = auto, 1 = keep, 2 = reject)'
+        });
+        var dvbs = new Ext.form.NumberField({
+             name: 'satip_dvbs',
+             fieldLabel: 'Exported DVB-S Tuners'
+        });
+        var dvbs2 = new Ext.form.NumberField({
+             name: 'satip_dvbs2',
+             fieldLabel: 'Exported DVB-S2 Tuners'
+        });
+        var dvbt = new Ext.form.NumberField({
+             name: 'satip_dvbt',
+             fieldLabel: 'Exported DVB-T Tuners'
+        });
+        var dvbt2 = new Ext.form.NumberField({
+             name: 'satip_dvbt2',
+             fieldLabel: 'Exported DVB-T2 Tuners'
+        });
+        var dvbc = new Ext.form.NumberField({
+             name: 'satip_dvbc',
+             fieldLabel: 'Exported DVB-C Tuners'
+        });
+        var dvbc2 = new Ext.form.NumberField({
+             name: 'satip_dvbc2',
+             fieldLabel: 'Exported DVB-C2 Tuners'
+        });
+        var atsc = new Ext.form.NumberField({
+             name: 'satip_atsc',
+             fieldLabel: 'Exported ATSC Tuners'
+        });
+        var dvbcb = new Ext.form.NumberField({
+             name: 'satip_dvbcb',
+             fieldLabel: 'Exported DVB-Cable/AnnexB Tuners'
+        });
+
+        satipPanel = new Ext.form.FieldSet({
+            title: 'SAT>IP Server',
+            width: 700,
+            autoHeight: true,
+            collapsible: true,
+            collapsed: true,
+            animCollapse: true,
+            items: [rtsp, weight, descramble, muxcnf,
+                    dvbs, dvbs2, dvbt, dvbt2, dvbc, dvbc2, atsc, dvbcb]
+        });
+    }
+
     /* ****************************************************************
     * Form
     * ***************************************************************/
@@ -242,6 +310,11 @@ tvheadend.miscconf = function(panel, index) {
         }
     });
 
+    var _items = [languageWrap, dvbscanWrap, tvhtimePanel, piconPanel];
+
+    if (satipPanel)
+      _items.push(satipPanel);
+
     var confpanel = new Ext.form.FormPanel({
         labelAlign: 'left',
         labelWidth: 200,
@@ -251,7 +324,7 @@ tvheadend.miscconf = function(panel, index) {
         layout: 'form',
         defaultType: 'textfield',
         autoHeight: true,
-        items: [languageWrap, dvbscanWrap, tvhtimePanel, piconPanel]
+        items: _items
     });
 
     var _items = [confpanel];

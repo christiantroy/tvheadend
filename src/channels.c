@@ -1,6 +1,6 @@
 /*
  *  tvheadend, channel functions
- *  Copyright (C) 2007 Andreas Öman
+ *  Copyright (C) 2007 Andreas Ã–man
  *
  *  This program is free software: you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -250,7 +250,7 @@ channel_class_epggrab_set ( void *o, const void *v )
   }
     
   /* Link */
-  if (ch->ch_epgauto && l) {
+  if (l) {
     HTSMSG_FOREACH(f, l) {
       if ((ec = epggrab_channel_find_by_id(htsmsg_field_get_str(f))))
         save |= epggrab_channel_link(ec, ch);
@@ -279,14 +279,6 @@ channel_class_epggrab_list ( void *o )
   htsmsg_add_bool(e, "enum", 1);
   htsmsg_add_msg(m, "params", e);
   return m;
-}
-
-static void
-channel_class_epgauto_notify ( void *obj )
-{
-  channel_t *ch = obj;
-  if (!ch->ch_epgauto)
-    channel_class_epggrab_set(obj, NULL);
 }
 
 static const void *
@@ -365,7 +357,6 @@ const idclass_t channel_class = {
       .id       = "epgauto",
       .name     = "Auto EPG Channel",
       .off      = offsetof(channel_t, ch_epgauto),
-      .notify   = channel_class_epgauto_notify,
     },
     {
       .type     = PT_STR,
@@ -587,6 +578,19 @@ channel_get_name ( channel_t *ch )
   return blank;
 }
 
+int
+channel_set_name ( channel_t *ch, const char *name )
+{
+  int save = 0;
+  if (!ch || !name) return 0;
+  if (!ch->ch_name || strcmp(ch->ch_name, name) ) {
+    if (ch->ch_name) free(ch->ch_name);
+    ch->ch_name = strdup(name);
+    save = 1;
+  }
+  return save;
+}
+
 int64_t
 channel_get_number ( channel_t *ch )
 {
@@ -609,6 +613,19 @@ channel_get_number ( channel_t *ch )
     return n;
   }
   return 0;
+}
+
+int
+channel_set_number ( channel_t *ch, uint32_t major, uint32_t minor )
+{
+  int save = 0;
+  int64_t chnum = (uint64_t)major * CHANNEL_SPLIT + (uint64_t)minor;
+  if (!ch || !chnum) return 0;
+  if (!ch->ch_number || ch->ch_number != chnum) {
+    ch->ch_number = chnum;
+    save = 1;
+  }
+  return save;
 }
 
 static int
@@ -736,6 +753,18 @@ channel_get_icon ( channel_t *ch )
   }
 
   return buf;
+}
+
+int channel_set_icon ( channel_t *ch, const char *icon )
+{
+  int save = 0;
+  if (!ch || !icon) return 0;
+  if (!ch->ch_icon || strcmp(ch->ch_icon, icon) ) {
+    if (ch->ch_icon) free(ch->ch_icon);
+    ch->ch_icon = strdup(icon);
+    save = 1;
+  }
+  return save;
 }
 
 /* **************************************************************************

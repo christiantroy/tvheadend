@@ -53,7 +53,10 @@ mpegts_network_scan_timer_cb ( void *p )
     if (mm->mm_active) continue;
 
     /* Attempt to tune */
-    r = mpegts_mux_subscribe(mm, NULL, "scan", mm->mm_scan_weight, mm->mm_scan_flags);
+    r = mpegts_mux_subscribe(mm, NULL, "scan", mm->mm_scan_weight,
+                             mm->mm_scan_flags |
+                             SUBSCRIPTION_ONESHOT |
+                             SUBSCRIPTION_TABLES);
 
     /* Started */
     if (!r) {
@@ -325,7 +328,7 @@ tsid_lookup:
     LIST_FOREACH(mn, &mpegts_network_all, mn_global_link)
       LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link)
         if (idnode_is_instance(&mm->mm_id, &dvb_mux_dvbs_class) &&
-            abs(((dvb_mux_t *)mm)->lm_tuning.dmc_fe_freq - freq) < 2000 &&
+            deltaU32(((dvb_mux_t *)mm)->lm_tuning.dmc_fe_freq, freq) < 2000 &&
             ((dvb_mux_t *)mm)->lm_tuning.u.dmc_fe_qpsk.orbital_pos == satpos)
           mpegts_mux_scan_state_set(mm, MM_SCAN_STATE_PEND);
     return;
@@ -355,7 +358,7 @@ tsid_lookup:
     LIST_FOREACH(mn, &mpegts_network_all, mn_global_link)
       LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link)
         if (idnode_is_instance(&mm->mm_id, &dvb_mux_dvbs_class) &&
-            abs(((dvb_mux_t *)mm)->lm_tuning.dmc_fe_freq - freq) < 2000 &&
+            deltaU32(((dvb_mux_t *)mm)->lm_tuning.dmc_fe_freq, freq) < 2000 &&
             ((dvb_mux_t *)mm)->lm_tuning.u.dmc_fe_qpsk.polarisation == dvb_str2pol(pol) &&
             ((dvb_mux_t *)mm)->lm_tuning.u.dmc_fe_qpsk.orbital_pos == satpos)
         {
@@ -381,7 +384,7 @@ tsid_lookup:
         mux->u.dmc_fe_qpsk.polarisation = dvb_str2pol(pol);
         mux->u.dmc_fe_qpsk.orbital_pos = satpos;
         mux->u.dmc_fe_qpsk.fec_inner = DVB_FEC_AUTO;
-        mux->dmc_fe_modulation = DVB_MOD_AUTO;
+        mux->dmc_fe_modulation = dvbs2 ? DVB_MOD_PSK_8 : DVB_MOD_QPSK;
         mux->dmc_fe_rolloff = DVB_ROLLOFF_AUTO;
         mux->dmc_fe_pls_code = 1;
 

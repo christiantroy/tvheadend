@@ -42,108 +42,74 @@
 
 #define TS_REMUX_BUFSIZE (188 * 100)
 
-static void ts_remux(mpegts_service_t *t, const uint8_t *tsb, int error);
+static void ts_remux(mpegts_service_t *t, const uint8_t *tsb, int len, int error);
 
 /**
  * Continue processing of transport stream packets
  */
 static void
 ts_recv_packet0
-  (mpegts_service_t *t, elementary_stream_t *st, const uint8_t *tsb)
+  (mpegts_service_t *t, elementary_stream_t *st, const uint8_t *tsb, int len)
 {
+  mpegts_service_t *m;
   int off, pusi, cc, error;
 
   service_set_streaming_status_flags((service_t*)t, TSS_MUX_PACKETS);
 
   if (!st) {
     if(streaming_pad_probe_type(&t->s_streaming_pad, SMT_MPEGTS))
-      ts_remux(t, tsb, 0);
+      ts_remux(t, tsb, len, 0);
     return;
   }
 
   error = !!(tsb[1] & 0x80);
-  pusi  = !!(tsb[1] & 0x40);
-
-  /* Check CC */
-
-  if(tsb[3] & 0x10) {
-    cc = tsb[3] & 0xf;
-    if(st->es_cc != -1 && cc != st->es_cc) {
-      /* Let the hardware to stabilize and don't flood the log */
-      if (t->s_start_time + 1 < dispatch_clock &&
-          tvhlog_limit(&st->es_cc_log, 10))
-        tvhwarn("TS", "%s Continuity counter error (total %zi)",
-                      service_component_nicename(st), st->es_cc_log.count);
-      avgstat_add(&t->s_cc_errors, 1, dispatch_clock);
-      avgstat_add(&st->es_cc_errors, 1, dispatch_clock);
-      error |= 2;
-    }
-    st->es_cc = (cc + 1) & 0xf;
-  }
 
   if(streaming_pad_probe_type(&t->s_streaming_pad, SMT_MPEGTS))
-    ts_remux(t, tsb, error);
+    ts_remux(t, tsb, len, error);
 
-  off = tsb[3] & 0x20 ? tsb[4] + 5 : 4;
+  LIST_FOREACH(m, &t->s_masters, s_masters_link) {
+    pthread_mutex_lock(&m->s_stream_mutex);
+    if(streaming_pad_probe_type(&m->s_streaming_pad, SMT_MPEGTS))
+      ts_remux(m, tsb, len, error);
+    pthread_mutex_unlock(&m->s_stream_mutex);
+  }
 
-  switch(st->es_type) {
+  for ( ; len > 0; tsb += 188, len -= 188) {
 
-  case SCT_CA:
-    break;
+    pusi  = !!(tsb[1] & 0x40);
 
-  default:
+    /* Check CC */
+
+    if(tsb[3] & 0x10) {
+      cc = tsb[3] & 0xf;
+      if(st->es_cc != -1 && cc != st->es_cc) {
+        /* Let the hardware to stabilize and don't flood the log */
+        if (t->s_start_time + 1 < dispatch_clock &&
+            tvhlog_limit(&st->es_cc_log, 10))
+          tvhwarn("TS", "%s Continuity counter error (total %zi)",
+                        service_component_nicename(st), st->es_cc_log.count);
+        avgstat_add(&t->s_cc_errors, 1, dispatch_clock);
+        avgstat_add(&st->es_cc_errors, 1, dispatch_clock);
+        error |= 2;
+      }
+      st->es_cc = (cc + 1) & 0xf;
+    }
+
+    off = tsb[3] & 0x20 ? tsb[4] + 5 : 4;
+
+    if (st->es_type == SCT_CA)
+      continue;
+
     if(!streaming_pad_probe_type(&t->s_streaming_pad, SMT_PACKET))
-      break;
+      continue;
 
     if(st->es_type == SCT_TELETEXT)
       teletext_input(t, st, tsb);
-    if(off > 188)
-      break;
 
-    if(t->s_status == SERVICE_RUNNING)
+    if(off <= 188 && t->s_status == SERVICE_RUNNING)
       parse_mpeg_ts((service_t*)t, st, tsb + off, 188 - off, pusi, error);
-    break;
+
   }
-}
-
-/**
- * Recover PCR
- *
- * st->es_pcr_drift will increase if our (system clock) runs faster
- * than the stream PCR
- */
-static void
-ts_process_pcr(mpegts_service_t *t, elementary_stream_t *st, int64_t pcr)
-{
-  int64_t real, d;
-  
-  if(st == NULL)
-    return;
-
-  real = getmonoclock();
-
-  if(st->es_pcr_real_last != PTS_UNSET) {
-    d = (real - st->es_pcr_real_last) - (pcr - st->es_pcr_last);
-    
-    if(d < -90000LL || d > 90000LL) {
-      st->es_pcr_recovery_fails++;
-      if(st->es_pcr_recovery_fails > 10) {
-        st->es_pcr_recovery_fails = 0;
-        st->es_pcr_real_last = PTS_UNSET;
-      }
-      return;
-    }
-    st->es_pcr_recovery_fails = 0;
-    st->es_pcr_drift += d;
-    
-    if(t->s_pcr_pid == st->es_pid) {
-      /* This is the registered PCR PID, adjust service PCR drift
-         via an IIR filter */
-      t->s_pcr_drift = (t->s_pcr_drift * 255 + st->es_pcr_drift) / 256;
-    }
-  }
-  st->es_pcr_last = pcr;
-  st->es_pcr_real_last = real;
 }
 
 /**
@@ -151,7 +117,7 @@ ts_process_pcr(mpegts_service_t *t, elementary_stream_t *st, int64_t pcr)
  */
 int
 ts_recv_packet1
-  (mpegts_service_t *t, const uint8_t *tsb, int64_t *pcrp, int table)
+  (mpegts_service_t *t, const uint8_t *tsb, int len, int64_t *pcrp, int table)
 {
   elementary_stream_t *st;
   int pid, r;
@@ -199,10 +165,6 @@ ts_recv_packet1
 
   st = service_stream_find((service_t*)t, pid);
 
-  /* Extract PCR */
-  if (pcr != PTS_UNSET)
-    ts_process_pcr(t, st, pcr);
-
   if((st == NULL) && (pid != t->s_pcr_pid) && !table) {
     pthread_mutex_unlock(&t->s_stream_mutex);
     return 0;
@@ -211,7 +173,7 @@ ts_recv_packet1
   if(!error)
     service_set_streaming_status_flags((service_t*)t, TSS_INPUT_SERVICE);
 
-  avgstat_add(&t->s_rate, 188, dispatch_clock);
+  avgstat_add(&t->s_rate, len, dispatch_clock);
 
   if((tsb[3] & 0xc0) ||
       (t->s_scrambled_seen && st && st->es_type != SCT_CA)) {
@@ -223,7 +185,7 @@ ts_recv_packet1
       t->s_scrambled_seen |= service_is_encrypted((service_t*)t);
 
     /* scrambled stream */
-    r = descrambler_descramble((service_t *)t, st, tsb);
+    r = descrambler_descramble((service_t *)t, st, tsb, len);
     if(r > 0) {
       pthread_mutex_unlock(&t->s_stream_mutex);
       return 1;
@@ -238,7 +200,7 @@ ts_recv_packet1
     }
 
   } else {
-    ts_recv_packet0(t, st, tsb);
+    ts_recv_packet0(t, st, tsb, len);
   }
   pthread_mutex_unlock(&t->s_stream_mutex);
   return 1;
@@ -249,21 +211,55 @@ ts_recv_packet1
  * Process transport stream packets, simple version
  */
 void
-ts_recv_packet2(mpegts_service_t *t, const uint8_t *tsb)
+ts_recv_packet2(mpegts_service_t *t, const uint8_t *tsb, int len)
 {
   elementary_stream_t *st;
-  int pid = (tsb[1] & 0x1f) << 8 | tsb[2];
+  int pid, len2;
 
-  if((st = service_stream_find((service_t*)t, pid)) != NULL)
-    ts_recv_packet0(t, st, tsb);
+  for ( ; len > 0; tsb += len2, len -= len2 ) {
+    len2 = mpegts_word_count(tsb, len, 0xFF9FFFD0);
+    pid = (tsb[1] & 0x1f) << 8 | tsb[2];
+    if((st = service_stream_find((service_t*)t, pid)) != NULL)
+      ts_recv_packet0(t, st, tsb, len2);
+  }
 }
 
+/*
+ *
+ */
+void
+ts_recv_raw(mpegts_service_t *t, const uint8_t *tsb, int len)
+{
+  int pid, parent = 0;
+
+  pthread_mutex_lock(&t->s_stream_mutex);
+  service_set_streaming_status_flags((service_t*)t, TSS_MUX_PACKETS);
+  if (!LIST_EMPTY(&t->s_slaves)) {
+    /* If PID is owned by a slave service, let parent service to
+     * deliver this PID (decrambling)
+     */
+    pid = (tsb[1] & 0x1f) << 8 | tsb[2];
+    parent = mpegts_pid_exists(t->s_slaves_pids, pid);
+    service_set_streaming_status_flags((service_t*)t, TSS_PACKETS);
+    t->s_streaming_live |= TSS_LIVE;
+  }
+  if(!parent) {
+    if (streaming_pad_probe_type(&t->s_streaming_pad, SMT_MPEGTS))
+      ts_remux(t, tsb, len, 0);
+    else {
+      /* No subscriber - set OK markers */
+      service_set_streaming_status_flags((service_t*)t, TSS_PACKETS);
+      t->s_streaming_live |= TSS_LIVE;
+    }
+  }
+  pthread_mutex_unlock(&t->s_stream_mutex);
+}
 
 /**
  *
  */
 static void
-ts_remux(mpegts_service_t *t, const uint8_t *src, int error)
+ts_remux(mpegts_service_t *t, const uint8_t *src, int len, int error)
 {
   streaming_message_t sm;
   pktbuf_t *pb;
@@ -272,13 +268,15 @@ ts_remux(mpegts_service_t *t, const uint8_t *src, int error)
   if (sb->sb_data == NULL)
     sbuf_init_fixed(sb, TS_REMUX_BUFSIZE);
 
-  sbuf_append(sb, src, 188);
+  sbuf_append(sb, src, len);
 
   if (error)
     sb->sb_err++;
 
-  if(sb->sb_ptr < TS_REMUX_BUFSIZE) 
+  if(dispatch_clock == t->s_tsbuf_last && sb->sb_ptr < TS_REMUX_BUFSIZE)
     return;
+
+  t->s_tsbuf_last = dispatch_clock;
 
   pb = pktbuf_alloc(sb->sb_data, sb->sb_ptr);
   pb->pb_err = sb->sb_err;
@@ -292,7 +290,7 @@ ts_remux(mpegts_service_t *t, const uint8_t *src, int error)
   service_set_streaming_status_flags((service_t*)t, TSS_PACKETS);
   t->s_streaming_live |= TSS_LIVE;
 
-  sbuf_reset(sb, TS_REMUX_BUFSIZE);
+  sbuf_reset(sb, 2*TS_REMUX_BUFSIZE);
 }
 
 /*

@@ -827,7 +827,7 @@ dvb_mux_conf_str_dvbs ( dvb_mux_conf_t *dmc, char *buf, size_t bufsize )
   const int satpos = dmc->u.dmc_fe_qpsk.orbital_pos;
   char satbuf[16];
   if (satpos != INT_MAX) {
-    snprintf(satbuf, sizeof(buf), "%d.%d%c ", abs(satpos) / 10, abs(satpos) % 10, satpos < 0 ? 'W' : 'E');
+    snprintf(satbuf, sizeof(satbuf), "%d.%d%c ", abs(satpos) / 10, abs(satpos) % 10, satpos < 0 ? 'W' : 'E');
   } else {
     satbuf[0] = '\0';
   }
@@ -933,9 +933,9 @@ void dvb_init( void )
 
 void dvb_done( void )
 {
-  extern SKEL_DECLARE(mpegts_table_state_skel, struct mpegts_table_state);
+  extern SKEL_DECLARE(mpegts_psi_table_state_skel, mpegts_psi_table_state_t);
 
-  SKEL_FREE(mpegts_table_state_skel);
+  SKEL_FREE(mpegts_psi_table_state_skel);
 #if ENABLE_MPEGTS_DVB
   htsmsg_destroy(satellites);
 #endif
