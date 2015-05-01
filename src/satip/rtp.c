@@ -17,6 +17,8 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <signal.h>
 #include <ctype.h>
 #include "tvheadend.h"
