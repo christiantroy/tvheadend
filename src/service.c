@@ -733,8 +733,8 @@ service_find_instance
   TAILQ_FOREACH(si, sil, si_link) {
     const char *name = ch ? channel_get_name(ch) : NULL;
     if (!name && s) name = s->s_nicename;
-    tvhdebug("service", "%s si %p %s weight %d prio %d error %d",
-             name, si, si->si_source, si->si_weight, si->si_prio,
+    tvhdebug("service", "%d: %s si %p %s weight %d prio %d error %d",
+             si->si_instance, name, si, si->si_source, si->si_weight, si->si_prio,
              si->si_error);
   }
 
@@ -1438,6 +1438,7 @@ service_source_info_free(struct source_info *si)
   free(si->si_mux);
   free(si->si_provider);
   free(si->si_service);
+  free(si->si_satpos);
 }
 
 
@@ -1451,6 +1452,7 @@ service_source_info_copy(source_info_t *dst, const source_info_t *src)
   COPY(mux);
   COPY(provider);
   COPY(service);
+  COPY(satpos);
 #undef COPY
 }
 

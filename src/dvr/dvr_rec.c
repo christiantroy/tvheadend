@@ -69,7 +69,7 @@ dvr_rec_subscribe(dvr_entry_t *de)
   assert(de->de_s == NULL);
   assert(de->de_chain == NULL);
 
-  if(de->de_pri < ARRAY_SIZE(prio2weight))
+  if(de->de_pri > 0 && de->de_pri < ARRAY_SIZE(prio2weight))
     weight = prio2weight[de->de_pri];
   else
     weight = 300;
@@ -600,7 +600,7 @@ dvr_thread(void *aux)
        } else if(sm->sm_code == 0) {
 	 // Recording is completed
 
-	de->de_last_error = 0;
+	de->de_last_error = SM_CODE_OK;
 	tvhlog(LOG_INFO, 
 	       "dvr", "Recording completed: \"%s\"",
 	       de->de_filename ?: lang_str_get(de->de_title, NULL));

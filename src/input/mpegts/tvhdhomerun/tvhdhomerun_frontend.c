@@ -25,18 +25,12 @@
 
 static void tvhdhomerun_device_open_pid(tvhdhomerun_frontend_t *hfe, mpegts_pid_t *mp);
 
-static mpegts_pid_t * tvhdhomerun_frontend_open_pid( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, void *owner );
+static mpegts_pid_t * tvhdhomerun_frontend_open_pid( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, int weight, void *owner );
 
 static int
-tvhdhomerun_frontend_is_free ( mpegts_input_t *mi )
+tvhdhomerun_frontend_get_weight ( mpegts_input_t *mi, mpegts_mux_t *mm, int flags )
 {
-  return mpegts_input_is_free(mi);
-}
-
-static int
-tvhdhomerun_frontend_get_weight ( mpegts_input_t *mi, int flags )
-{
-  return mpegts_input_get_weight(mi, flags);
+  return mpegts_input_get_weight(mi, mm, flags);
 }
 
 static int
@@ -316,7 +310,7 @@ tvhdhomerun_frontend_monitor_cb( void *aux )
   sm.sm_type = SMT_SIGNAL_STATUS;
   sm.sm_data = &sigstat;
 
-  LIST_FOREACH(svc, &hfe->mi_transports, s_active_link) {
+  LIST_FOREACH(svc, &mmi->mmi_mux->mm_transports, s_active_link) {
     pthread_mutex_lock(&svc->s_stream_mutex);
     streaming_pad_deliver(&svc->s_streaming_pad, streaming_msg_clone(&sm));
     pthread_mutex_unlock(&svc->s_stream_mutex);
@@ -475,14 +469,14 @@ tvhdhomerun_frontend_stop_mux
   gtimer_arm(&hfe->hf_monitor_timer, tvhdhomerun_frontend_monitor_cb, hfe, 2);
 }
 
-static mpegts_pid_t *tvhdhomerun_frontend_open_pid( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, void *owner )
+static mpegts_pid_t *tvhdhomerun_frontend_open_pid( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, int weight, void *owner )
 {
   tvhdhomerun_frontend_t *hfe = (tvhdhomerun_frontend_t*)mi;
   mpegts_pid_t *mp;
 
   //tvhdebug("tvhdhomerun", "Open pid 0x%x\n", pid);
 
-  if (!(mp = mpegts_input_open_pid(mi, mm, pid, type, owner))) {
+  if (!(mp = mpegts_input_open_pid(mi, mm, pid, type, weight, owner))) {
     tvhdebug("tvhdhomerun", "Failed to open pid %d", pid);
     return NULL;
   }
@@ -492,13 +486,13 @@ static mpegts_pid_t *tvhdhomerun_frontend_open_pid( mpegts_input_t *mi, mpegts_m
   return mp;
 }
 
-static int tvhdhomerun_frontend_close_pid( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, void *owner )
+static int tvhdhomerun_frontend_close_pid( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, int weight, void *owner )
 {
   //tvhdhomerun_frontend_t *hfe = (tvhdhomerun_frontend_t*)mi;
 
   tvhdebug("tvhdhomerun", "closing pid 0x%x",pid);
 
-  return mpegts_input_close_pid(mi, mm, pid, type, owner);
+  return mpegts_input_close_pid(mi, mm, pid, type, weight, owner);
 
   //tvhdhomerun_device_update_pid_filter(hfe, mm);
 }
@@ -658,7 +652,6 @@ tvhdhomerun_frontend_create(tvhdhomerun_device_t *hd, struct hdhomerun_discover_
   if (!hfe) return NULL;
 
   /* Callbacks */
-  hfe->mi_is_free      = tvhdhomerun_frontend_is_free;
   hfe->mi_get_weight   = tvhdhomerun_frontend_get_weight;
   hfe->mi_get_priority = tvhdhomerun_frontend_get_priority;
   hfe->mi_get_grace    = tvhdhomerun_frontend_get_grace;

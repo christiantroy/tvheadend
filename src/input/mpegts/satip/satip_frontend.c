@@ -88,7 +88,7 @@ satip_frontend_signal_cb( void *aux )
   sigstat.tc_block     = mmi->tii_stats.tc_block;
   sm.sm_type = SMT_SIGNAL_STATUS;
   sm.sm_data = &sigstat;
-  LIST_FOREACH(svc, &lfe->mi_transports, s_active_link) {
+  LIST_FOREACH(svc, &mmi->mmi_mux->mm_transports, s_active_link) {
     pthread_mutex_lock(&svc->s_stream_mutex);
     streaming_pad_deliver(&svc->s_streaming_pad, streaming_msg_clone(&sm));
     pthread_mutex_unlock(&svc->s_stream_mutex);
@@ -357,16 +357,9 @@ const idclass_t satip_frontend_atsc_class =
  * *************************************************************************/
 
 static int
-satip_frontend_is_free ( mpegts_input_t *mi )
+satip_frontend_get_weight ( mpegts_input_t *mi, mpegts_mux_t *mm, int flags )
 {
-  /* TODO: Add some RTSP live checks here */
-  return mpegts_input_is_free(mi);
-}
-
-static int
-satip_frontend_get_weight ( mpegts_input_t *mi, int flags )
-{
-  return mpegts_input_get_weight(mi, flags);
+  return mpegts_input_get_weight(mi, mm, flags);
 }
 
 static int
@@ -385,22 +378,28 @@ satip_frontend_get_grace ( mpegts_input_t *mi, mpegts_mux_t *mm )
   satip_frontend_t *lfe = (satip_frontend_t*)mi;
   int r = 5;
   if (lfe->sf_positions)
-    r = 10;
+    r = MIN(60, MAX(r, satip_satconf_get_grace(lfe, mm) ?: 10));
   return r;
 }
 
 static int
 satip_frontend_match_satcfg ( satip_frontend_t *lfe2, mpegts_mux_t *mm2 )
 {
+  satip_frontend_t *lfe_master;
   mpegts_mux_t *mm1;
   dvb_mux_conf_t *mc1, *mc2;
   int position, high1, high2;
 
   if (lfe2->sf_req == NULL || lfe2->sf_req->sf_mmi == NULL)
     return 0;
+
+  lfe_master = lfe2;
+  if (lfe2->sf_master)
+    lfe_master = satip_frontend_find_by_number(lfe2->sf_device, lfe2->sf_master) ?: lfe2;
+
   mm1 = lfe2->sf_req->sf_mmi->mmi_mux;
   position = satip_satconf_get_position(lfe2, mm2);
-  if (position <= 0 || lfe2->sf_position != position)
+  if (position <= 0 || lfe_master->sf_position != position)
     return 0;
   mc1 = &((dvb_mux_t *)mm1)->lm_tuning;
   mc2 = &((dvb_mux_t *)mm2)->lm_tuning;
@@ -531,7 +530,7 @@ satip_frontend_start_mux
 }
 
 static int
-satip_frontend_add_pid( satip_frontend_t *lfe, int pid)
+satip_frontend_add_pid( satip_frontend_t *lfe, int pid, int weight)
 {
   satip_tune_req_t *tr;
 
@@ -540,7 +539,7 @@ satip_frontend_add_pid( satip_frontend_t *lfe, int pid)
 
   tr = lfe->sf_req;
   if (tr) {
-    mpegts_pid_add(&tr->sf_pids, pid);
+    mpegts_pid_add(&tr->sf_pids, pid, weight);
     return 1;
   }
 
@@ -549,14 +548,14 @@ satip_frontend_add_pid( satip_frontend_t *lfe, int pid)
 
 static mpegts_pid_t *
 satip_frontend_open_pid
-  ( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, void *owner )
+  ( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, int weight, void *owner )
 {
   satip_frontend_t *lfe = (satip_frontend_t*)mi;
   satip_tune_req_t *tr;
   mpegts_pid_t *mp;
   int change = 0;
 
-  if (!(mp = mpegts_input_open_pid(mi, mm, pid, type, owner)))
+  if (!(mp = mpegts_input_open_pid(mi, mm, pid, type, weight, owner)))
     return NULL;
 
   if (mp->mp_pid > MPEGTS_FULLMUX_PID)
@@ -572,14 +571,14 @@ satip_frontend_open_pid
         mpegts_service_t *s;
         elementary_stream_t *st;
         LIST_FOREACH(s, &mm->mm_services, s_dvb_mux_link) {
-          change |= satip_frontend_add_pid(lfe, s->s_pmt_pid);
-          change |= satip_frontend_add_pid(lfe, s->s_pcr_pid);
+          change |= satip_frontend_add_pid(lfe, s->s_pmt_pid, weight);
+          change |= satip_frontend_add_pid(lfe, s->s_pcr_pid, weight);
           TAILQ_FOREACH(st, &s->s_components, es_link)
-            change |= satip_frontend_add_pid(lfe, st->es_pid);
+            change |= satip_frontend_add_pid(lfe, st->es_pid, weight);
         }
       }
     } else {
-      change |= satip_frontend_add_pid(lfe, mp->mp_pid);
+      change |= satip_frontend_add_pid(lfe, mp->mp_pid, weight);
     }
     if (change)
       tvh_write(lfe->sf_dvr_pipe.wr, "c", 1);
@@ -591,14 +590,21 @@ satip_frontend_open_pid
 
 static int
 satip_frontend_close_pid
-  ( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, void *owner )
+  ( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, int weight, void *owner )
 {
   satip_frontend_t *lfe = (satip_frontend_t*)mi;
   satip_tune_req_t *tr;
   int change = 0, r;
 
-  if ((r = mpegts_input_close_pid(mi, mm, pid, type, owner)) <= 0)
-    return r;
+  if (pid < MPEGTS_FULLMUX_PID) {
+    pthread_mutex_lock(&lfe->sf_dvr_lock);
+    if ((tr = lfe->sf_req) != NULL)
+      change = mpegts_pid_del(&tr->sf_pids, pid, weight) >= 0;
+    pthread_mutex_unlock(&lfe->sf_dvr_lock);
+  }
+
+  if ((r = mpegts_input_close_pid(mi, mm, pid, type, weight, owner)) <= 0)
+    return r; /* return here even if change is nonzero - multiple PID subscribers */
 
   /* Skip internal PIDs */
   if (pid > MPEGTS_FULLMUX_PID)
@@ -614,8 +620,6 @@ satip_frontend_close_pid
           change = 1;
         }
       }
-    } else {
-      change = mpegts_pid_del(&tr->sf_pids, pid) >= 0;
     }
     if (change)
       tvh_write(lfe->sf_dvr_pipe.wr, "c", 1);
@@ -795,10 +799,10 @@ satip_frontend_pid_changed( http_client_t *rtsp,
 {
   satip_tune_req_t *tr;
   char *add, *del;
-  int i, j, r, any;
+  int i, j, r;
   int max_pids_len = lfe->sf_device->sd_pids_len;
   int max_pids_count = lfe->sf_device->sd_pids_max;
-  mpegts_apids_t padd, pdel;
+  mpegts_apids_t wpid, padd, pdel;
 
   pthread_mutex_lock(&lfe->sf_dvr_lock);
 
@@ -809,15 +813,12 @@ satip_frontend_pid_changed( http_client_t *rtsp,
     return 0;
   }
 
-  any = tr->sf_pids.all;
+  if (tr->sf_pids.all) {
 
-  if (tr->sf_pids.count > max_pids_count)
-    any = lfe->sf_device->sd_fullmux_ok ? 1 : 0;
-
-  if (any) {
-
+all:
     i = tr->sf_pids_tuned.all;
-    mpegts_pid_copy(&tr->sf_pids_tuned, &tr->sf_pids);
+    mpegts_pid_done(&tr->sf_pids_tuned);
+    tr->sf_pids_tuned.all = 1;
     pthread_mutex_unlock(&lfe->sf_dvr_lock);
     if (i)
       return 0;
@@ -829,17 +830,16 @@ satip_frontend_pid_changed( http_client_t *rtsp,
              tr->sf_pids_tuned.all ||
              tr->sf_pids.count == 0) {
 
-    j = tr->sf_pids.count;
-    if (j > lfe->sf_device->sd_pids_max)
-      j = lfe->sf_device->sd_pids_max;
+    mpegts_pid_weighted(&wpid, &tr->sf_pids, lfe->sf_device->sd_pids_max);
+    j = MIN(wpid.count, lfe->sf_device->sd_pids_max);
     add = alloca(1 + j * 5);
     add[0] = '\0';
-    /* prioritize higher PIDs (tables are low prio) */
-    for (i = tr->sf_pids.count - j; i < tr->sf_pids.count; i++)
-      sprintf(add + strlen(add), ",%i", tr->sf_pids.pids[i]);
-    mpegts_pid_copy(&tr->sf_pids_tuned, &tr->sf_pids);
+    for (i = 0; i < j; i++)
+      sprintf(add + strlen(add), ",%i", wpid.pids[i].pid);
+    mpegts_pid_copy(&tr->sf_pids_tuned, &wpid);
     tr->sf_pids_tuned.all = 0;
     pthread_mutex_unlock(&lfe->sf_dvr_lock);
+    mpegts_pid_done(&wpid);
 
     if (!j || add[0] == '\0')
       return 0;
@@ -849,27 +849,35 @@ satip_frontend_pid_changed( http_client_t *rtsp,
 
   } else {
 
-    mpegts_pid_compare(&tr->sf_pids, &tr->sf_pids_tuned, &padd, &pdel);
+    mpegts_pid_weighted(&wpid, &tr->sf_pids, lfe->sf_device->sd_pids_max);
+
+    if (wpid.count > max_pids_count) {
+      if (lfe->sf_device->sd_fullmux_ok) {
+        mpegts_pid_done(&wpid);
+        goto all;
+      }
+    }
+
+    mpegts_pid_compare(&wpid, &tr->sf_pids_tuned, &padd, &pdel);
 
     add = alloca(1 + padd.count * 5);
     del = alloca(1 + pdel.count * 5);
     add[0] = del[0] = '\0';
 
     for (i = 0; i < pdel.count; i++) {
-      sprintf(del + strlen(del), ",%i", pdel.pids[i]);
-      mpegts_pid_del(&tr->sf_pids_tuned, pdel.pids[i]);
+      sprintf(del + strlen(del), ",%i", pdel.pids[i].pid);
+      mpegts_pid_del(&tr->sf_pids_tuned, pdel.pids[i].pid, pdel.pids[i].weight);
     }
 
-    j = padd.count;
-    if (padd.count + tr->sf_pids_tuned.count > max_pids_count)
-      j = max_pids_count - tr->sf_pids_tuned.count;
-    /* prioritize higher PIDs (tables are low prio) */
-    for (i = padd.count - j; i < padd.count; i++)
-      sprintf(add + strlen(add), ",%i", padd.pids[i]);
+    j = MIN(padd.count, lfe->sf_device->sd_pids_max);
+    for (i = 0; i < j; i++)
+      sprintf(add + strlen(add), ",%i", padd.pids[i].pid);
 
-    mpegts_pid_copy(&tr->sf_pids_tuned, &tr->sf_pids);
+    mpegts_pid_copy(&tr->sf_pids_tuned, &wpid);
+    tr->sf_pids_tuned.all = 0;
     pthread_mutex_unlock(&lfe->sf_dvr_lock);
 
+    mpegts_pid_done(&wpid);
     mpegts_pid_done(&padd);
     mpegts_pid_done(&pdel);
 
@@ -1167,11 +1175,8 @@ new_tune:
   lm = (dvb_mux_t *)mmi->mmi_mux;
 
   lfe_master = lfe;
-  if (lfe->sf_master) {
-    lfe_master = satip_frontend_find_by_number(lfe->sf_device, lfe->sf_master);
-    if (lfe_master == NULL)
-      lfe_master = lfe;
-  }
+  if (lfe->sf_master)
+    lfe_master = satip_frontend_find_by_number(lfe->sf_device, lfe->sf_master) ?: lfe;
 
   i = 0;
   if (!rtsp) {
@@ -1658,7 +1663,6 @@ satip_frontend_create
   lfe->sf_position     = -1;
 
   /* Callbacks */
-  lfe->mi_is_free      = satip_frontend_is_free;
   lfe->mi_get_weight   = satip_frontend_get_weight;
   lfe->mi_get_priority = satip_frontend_get_priority;
   lfe->mi_get_grace    = satip_frontend_get_grace;

@@ -244,6 +244,7 @@ subscription_show_info(th_subscription_t *s)
     tvh_strlcatf(buf, sizeof(buf), l, ", client=\"%s\"", s->ths_client);
 
   tvhlog(LOG_INFO, "subscription", "%04X: %s", shortid(s), buf);
+  service_source_info_free(&si);
 }
 
 /**
@@ -316,6 +317,9 @@ subscription_reschedule(void)
 
       if(s->ths_state != SUBSCRIPTION_BAD_SERVICE)
 	continue; /* And it not bad, so we're happy */
+
+      tvhwarn("subscription", "%04X: service instance is bad, reason: %s",
+              shortid(s), streaming_code2txt(s->ths_testing_error));
 
       t->s_streaming_status = 0;
       t->s_status = SERVICE_IDLE;
@@ -490,10 +494,13 @@ subscription_input(void *opauqe, streaming_message_t *sm)
       // No, mark our subscription as bad_service
       // the scheduler will take care of things
       error = tss2errcode(sm->sm_code);
-      if (error > s->ths_testing_error)
-        s->ths_testing_error = error;
-      s->ths_state = SUBSCRIPTION_BAD_SERVICE;
-      streaming_msg_free(sm);
+      if (error != SM_CODE_NO_ACCESS ||
+          (s->ths_flags & SUBSCRIPTION_CONTACCESS) == 0) {
+        if (error > s->ths_testing_error)
+          s->ths_testing_error = error;
+        s->ths_state = SUBSCRIPTION_BAD_SERVICE;
+        streaming_msg_free(sm);
+      }
       return;
     }
 
@@ -517,9 +524,12 @@ subscription_input(void *opauqe, streaming_message_t *sm)
   if (sm->sm_type == SMT_SERVICE_STATUS &&
       sm->sm_code & (TSS_TUNING|TSS_TIMEOUT)) {
     error = tss2errcode(sm->sm_code);
-    if (error > s->ths_testing_error)
-      s->ths_testing_error = error;
-    s->ths_state = SUBSCRIPTION_BAD_SERVICE;
+    if (error != SM_CODE_NO_ACCESS ||
+        (s->ths_flags & SUBSCRIPTION_CONTACCESS) == 0) {
+      if (error > s->ths_testing_error)
+        s->ths_testing_error = error;
+      s->ths_state = SUBSCRIPTION_BAD_SERVICE;
+    }
   }
 
   /* Pass to direct handler to log traffic */
@@ -640,7 +650,6 @@ subscription_create
   streaming_target_init(&s->ths_input, cb, s, reject);
 
   s->ths_prch              = prch && prch->prch_st ? prch : NULL;
-  s->ths_weight            = weight;
   s->ths_title             = strdup(name);
   s->ths_hostname          = hostname ? strdup(hostname) : NULL;
   s->ths_username          = username ? strdup(username) : NULL;
@@ -652,8 +661,17 @@ subscription_create
   s->ths_postpone          = subscription_postpone;
   s->ths_postpone_end      = dispatch_clock + s->ths_postpone;
 
-  if (pro && pro->pro_restart)
-    s->ths_flags |= SUBSCRIPTION_RESTART;
+  if (s->ths_prch)
+    s->ths_weight = profile_chain_weight(s->ths_prch, weight);
+  else
+    s->ths_weight = weight;
+
+  if (pro) {
+    if (pro->pro_restart)
+      s->ths_flags |= SUBSCRIPTION_RESTART;
+    if (pro->pro_contaccess)
+      s->ths_flags |= SUBSCRIPTION_CONTACCESS;
+  }
 
   time(&s->ths_start);
 
@@ -686,12 +704,14 @@ subscription_create_from_channel_or_service(profile_chain_t *prch,
   th_subscription_t *s;
   service_instance_t *si;
   channel_t *ch = NULL;
+  int _error;
 
   assert(prch);
   assert(prch->prch_id);
 
-  if (error)
-    *error = 0;
+  if (error == NULL)
+    error = &_error;
+  *error = 0;
 
   if (!service)
     ch = prch->prch_id;

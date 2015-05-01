@@ -134,7 +134,8 @@ mpegts_mux_subscribe_keep
 
   s = mi->mi_linked;
   mi->mi_linked = NULL;
-  r = mpegts_mux_subscribe(mm, mi, "keep", SUBSCRIPTION_PRIO_KEEP, SUBSCRIPTION_NONE);
+  r = mpegts_mux_subscribe(mm, mi, "keep", SUBSCRIPTION_PRIO_KEEP,
+                           SUBSCRIPTION_RESTART | SUBSCRIPTION_MINIMAL);
   mi->mi_linked = s;
   return r;
 }
@@ -203,6 +204,7 @@ mpegts_mux_unsubscribe_linked
   mpegts_mux_instance_t *mmi;
 
   if (mi) {
+    tvhtrace("mpegts", "unsubscribing linked from '%s'", mi->mi_name);
     LIST_FOREACH(mmi, &mi->mi_mux_active, mmi_active_link)
       mpegts_mux_unsubscribe_by_name(mmi->mmi_mux, "keep");
   }
@@ -262,18 +264,13 @@ mpegts_mux_instance_weight ( mpegts_mux_instance_t *mmi )
   int w = 0;
   const service_t *s;
   const th_subscription_t *ths;
-  mpegts_input_t *mi = mmi->mmi_input;
-  lock_assert(&mi->mi_output_lock);
+  mpegts_mux_t *mm = mmi->mmi_mux;
+  lock_assert(&mmi->mmi_input->mi_output_lock);
 
   /* Service subs */
-  LIST_FOREACH(s, &mi->mi_transports, s_active_link) {
-    mpegts_service_t *ms = (mpegts_service_t*)s;
-    if (ms->s_dvb_mux == mmi->mmi_mux) {
-      LIST_FOREACH(ths, &s->s_subscriptions, ths_service_link) {
-        w = MAX(w, ths->ths_weight);
-      }
-    }
-  }
+  LIST_FOREACH(s, &mm->mm_transports, s_active_link)
+    LIST_FOREACH(ths, &s->s_subscriptions, ths_service_link)
+      w = MAX(w, ths->ths_weight);
 
   return w;
 }
@@ -721,6 +718,9 @@ mpegts_mux_stop ( mpegts_mux_t *mm, int force, int reason )
     }
   }
 
+  if (mm->mm_active != mmi)
+    return;
+
   mi->mi_stopping_mux(mi, mmi);
   mi->mi_stop_mux(mi, mmi);
   mi->mi_stopped_mux(mi, mmi);
@@ -761,8 +761,6 @@ mpegts_mux_stop ( mpegts_mux_t *mm, int force, int reason )
       }
     }
     RB_REMOVE(&mm->mm_pids, mp, mp_link);
-    if (mp->mp_fd != -1)
-      linuxdvb_filter_close(mp->mp_fd);
     free(mp);
   }
   pthread_mutex_unlock(&mi->mi_output_lock);
@@ -810,7 +808,7 @@ mpegts_mux_open_table ( mpegts_mux_t *mm, mpegts_table_t *mt, int subscribe )
     mt->mt_subscribed = 1;
     pthread_mutex_unlock(&mm->mm_tables_lock);
     pthread_mutex_lock(&mi->mi_output_lock);
-    mi->mi_open_pid(mi, mm, mt->mt_pid, mpegts_table_type(mt), mt);
+    mi->mi_open_pid(mi, mm, mt->mt_pid, mpegts_table_type(mt), mt->mt_weight, mt);
     pthread_mutex_unlock(&mi->mi_output_lock);
     pthread_mutex_lock(&mm->mm_tables_lock);
     mpegts_table_release(mt);
@@ -818,10 +816,33 @@ mpegts_mux_open_table ( mpegts_mux_t *mm, mpegts_table_t *mt, int subscribe )
 }
 
 void
-mpegts_mux_close_table ( mpegts_mux_t *mm, mpegts_table_t *mt )
+mpegts_mux_unsubscribe_table ( mpegts_mux_t *mm, mpegts_table_t *mt )
 {
   mpegts_input_t *mi;
 
+  lock_assert(&mm->mm_tables_lock);
+
+  mi = mm->mm_active->mmi_input;
+  if (mt->mt_subscribed) {
+    mpegts_table_grab(mt);
+    mt->mt_subscribed = 0;
+    pthread_mutex_unlock(&mm->mm_tables_lock);
+    pthread_mutex_lock(&mi->mi_output_lock);
+    mi->mi_close_pid(mi, mm, mt->mt_pid, mpegts_table_type(mt), mt->mt_weight, mt);
+    pthread_mutex_unlock(&mi->mi_output_lock);
+    pthread_mutex_lock(&mm->mm_tables_lock);
+    mpegts_table_release(mt);
+  }
+  if ((mt->mt_flags & MT_DEFER) && mt->mt_defer_cmd == MT_DEFER_OPEN_PID) {
+    TAILQ_REMOVE(&mm->mm_defer_tables, mt, mt_defer_link);
+    mt->mt_defer_cmd = 0;
+    mpegts_table_release(mt);
+  }
+}
+
+void
+mpegts_mux_close_table ( mpegts_mux_t *mm, mpegts_table_t *mt )
+{
   lock_assert(&mm->mm_tables_lock);
 
   if (!mm->mm_active || !mm->mm_active->mmi_input) {
@@ -852,19 +873,9 @@ mpegts_mux_close_table ( mpegts_mux_t *mm, mpegts_table_t *mt )
     TAILQ_INSERT_TAIL(&mm->mm_defer_tables, mt, mt_defer_link);
     return;
   }
-  mi = mm->mm_active->mmi_input;
   LIST_REMOVE(mt, mt_link);
   mm->mm_num_tables--;
-  if (mt->mt_subscribed) {
-    mpegts_table_grab(mt);
-    mt->mt_subscribed = 0;
-    pthread_mutex_unlock(&mm->mm_tables_lock);
-    pthread_mutex_lock(&mi->mi_output_lock);
-    mi->mi_close_pid(mi, mm, mt->mt_pid, mpegts_table_type(mt), mt);
-    pthread_mutex_unlock(&mi->mi_output_lock);
-    pthread_mutex_lock(&mm->mm_tables_lock);
-    mpegts_table_release(mt);
-  }
+  mm->mm_unsubscribe_table(mm, mt);
 }
 
 /* **************************************************************************
@@ -1030,6 +1041,7 @@ mpegts_mux_create0
 
   /* Table processing */
   mm->mm_open_table          = mpegts_mux_open_table;
+  mm->mm_unsubscribe_table   = mpegts_mux_unsubscribe_table;
   mm->mm_close_table         = mpegts_mux_close_table;
   pthread_mutex_init(&mm->mm_tables_lock, NULL);
   TAILQ_INIT(&mm->mm_table_queue);
@@ -1181,7 +1193,7 @@ mpegts_mux_unsubscribe_by_name
 
   s = LIST_FIRST(&mm->mm_raw_subs);
   while (s) {
-    n = LIST_NEXT(s, ths_global_link);
+    n = LIST_NEXT(s, ths_mux_link);
     t = s->ths_service;
     if (t && t->s_type == STYPE_RAW && !strcmp(s->ths_title, name))
       subscription_unsubscribe(s, 0);
@@ -1270,7 +1282,6 @@ mpegts_mux_find_pid_ ( mpegts_mux_t *mm, int pid, int create )
       mp = calloc(1, sizeof(*mp));
       mp->mp_pid = pid;
       if (!RB_INSERT_SORTED(&mm->mm_pids, mp, mp_link, mp_cmp)) {
-        mp->mp_fd = -1;
         mp->mp_cc = -1;
       } else {
         free(mp);

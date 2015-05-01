@@ -1106,6 +1106,7 @@ dvr_timer_start_recording(void *aux)
 
   de->de_sched_state = DVR_RECORDING;
   de->de_rec_state = DVR_RS_PENDING;
+  de->de_last_error = SM_CODE_OK;
 
   tvhlog(LOG_INFO, "dvr", "\"%s\" on \"%s\" recorder starting",
 	 lang_str_get(de->de_title, NULL), DVR_CH_NAME(de));
@@ -2210,6 +2211,7 @@ dvr_entry_delete(dvr_entry_t *de)
   time_t t;
   struct tm tm;
   char tbuf[64];
+  int r;
 
   t = dvr_entry_get_start_time(de);
   localtime_r(&t, &tm);
@@ -2227,9 +2229,10 @@ dvr_entry_delete(dvr_entry_t *de)
 #if ENABLE_INOTIFY
     dvr_inotify_del(de);
 #endif
-    if(unlink(de->de_filename) && errno != ENOENT)
+    r = deferred_unlink(de->de_filename);
+    if(r && r != -ENOENT)
       tvhlog(LOG_WARNING, "dvr", "Unable to remove file '%s' from disk -- %s",
-	     de->de_filename, strerror(errno));
+	     de->de_filename, strerror(-errno));
 
     /* Also delete directories, if they were created for the recording and if they are empty */
 

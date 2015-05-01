@@ -87,6 +87,14 @@ const idclass_t linuxdvb_frontend_class =
       .off      = offsetof(linuxdvb_frontend_t, lfe_number),
     },
     {
+      .type     = PT_INT,
+      .id       = "pids_max",
+      .name     = "Maximum PIDs ",
+      .off      = offsetof(linuxdvb_frontend_t, lfe_pids_max),
+      .opts     = PO_ADVANCED,
+      .def.i    = 32
+    },
+    {
       .type     = PT_BOOL,
       .id       = "powersave",
       .name     = "Power Save",
@@ -137,6 +145,12 @@ const idclass_t linuxdvb_frontend_dvbt_class =
   .ic_class      = "linuxdvb_frontend_dvbt",
   .ic_caption    = "Linux DVB-T Frontend",
   .ic_properties = (const property_t[]){
+    {
+      .type     = PT_BOOL,
+      .id       = "lna",
+      .name     = "LNA (Low Noise Amplifier)",
+      .off      = offsetof(linuxdvb_frontend_t, lfe_lna),
+    },
     {}
   }
 };
@@ -252,24 +266,13 @@ linuxdvb_frontend_enabled_updated ( mpegts_input_t *mi )
 }
 
 static int
-linuxdvb_frontend_is_free ( mpegts_input_t *mi )
-{
-  linuxdvb_adapter_t *la = ((linuxdvb_frontend_t*)mi)->lfe_adapter;
-  linuxdvb_frontend_t *lfe;
-  LIST_FOREACH(lfe, &la->la_frontends, lfe_link)
-    if (!mpegts_input_is_free((mpegts_input_t*)lfe))
-      return 0;
-  return 1;
-}
-
-static int
-linuxdvb_frontend_get_weight ( mpegts_input_t *mi, int flags )
+linuxdvb_frontend_get_weight ( mpegts_input_t *mi, mpegts_mux_t *mm, int flags )
 {
   int weight = 0;
   linuxdvb_adapter_t *la = ((linuxdvb_frontend_t*)mi)->lfe_adapter;
   linuxdvb_frontend_t *lfe;
   LIST_FOREACH(lfe, &la->la_frontends, lfe_link)
-    weight = MAX(weight, mpegts_input_get_weight((mpegts_input_t*)lfe, flags));
+    weight = MAX(weight, mpegts_input_get_weight((mpegts_input_t*)lfe, mm, flags));
   return weight;
 }
 
@@ -338,6 +341,7 @@ linuxdvb_frontend_stop_mux
 
   lfe->lfe_in_setup = 0;
   lfe->lfe_freq = 0;
+  mpegts_pid_done(&lfe->lfe_pids);
 }
 
 static int
@@ -358,79 +362,51 @@ linuxdvb_frontend_start_mux
   return res;
 }
 
-void
-linuxdvb_filter_close
-  ( int fd )
-{
-  close(fd);
-}
-
-static void
-linuxdvb_frontend_open_pid0
-  ( linuxdvb_frontend_t *lfe, mpegts_pid_t *mp )
-{
-  char name[256];
-  struct dmx_pes_filter_params dmx_param;
-  int fd;
-
-  /* Do not open internal PIDs */
-  if (mp->mp_pid > MPEGTS_FULLMUX_PID)
-    return;
-
-  /* Already opened */
-  if (mp->mp_fd != -1)
-    return;
-
-  /* Not locked */
-  if (!lfe->lfe_locked)
-    return;
-
-  lfe->mi_display_name((mpegts_input_t*)lfe, name, sizeof(name));
-
-  /* Open DMX */
-  fd = tvh_open(lfe->lfe_dmx_path, O_RDWR, 0);
-  if(fd == -1) {
-    tvherror("linuxdvb", "%s - failed to open dmx for pid %d [e=%s]",
-             name, mp->mp_pid, strerror(errno));
-    return;
-  }
-
-  /* Install filter */
-  tvhtrace("linuxdvb", "%s - open PID %04X (%d) fd %d",
-           name, mp->mp_pid, mp->mp_pid, fd);
-  memset(&dmx_param, 0, sizeof(dmx_param));
-  dmx_param.pid      = mp->mp_pid;
-  dmx_param.input    = DMX_IN_FRONTEND;
-  dmx_param.output   = DMX_OUT_TS_TAP;
-  dmx_param.pes_type = DMX_PES_OTHER;
-  dmx_param.flags    = DMX_IMMEDIATE_START;
-
-  if(ioctl(fd, DMX_SET_PES_FILTER, &dmx_param)) {
-    tvherror("linuxdvb", "%s - failed to config dmx for pid %d [e=%s]",
-             name, mp->mp_pid, strerror(errno));
-    close(fd);
-    return;
-  }
-
-  /* Store */
-  mp->mp_fd = fd;
-
-  return;
-}
-
 static mpegts_pid_t *
 linuxdvb_frontend_open_pid
-  ( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, void *owner )
+  ( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, int weight, void *owner )
 {
   mpegts_pid_t *mp;
   linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)mi;
+  int change = 0;
 
-  if (!(mp = mpegts_input_open_pid(mi, mm, pid, type, owner)))
+  if (pid < MPEGTS_FULLMUX_PID)
+    change = mpegts_pid_add(&lfe->lfe_pids, pid, weight) >= 0;
+  else if (pid == MPEGTS_FULLMUX_PID) {
+    change = lfe->lfe_pids.all == 0;
+    lfe->lfe_pids.all = 1;
+  }
+
+  if (!(mp = mpegts_input_open_pid(mi, mm, pid, type, weight, owner)))
     return NULL;
 
-  linuxdvb_frontend_open_pid0(lfe, mp);
+  if (change && lfe->lfe_dvr_pipe.wr > 0)
+    tvh_write(lfe->lfe_dvr_pipe.wr, "c", 1);
 
   return mp;
+}
+
+static int
+linuxdvb_frontend_close_pid
+  ( mpegts_input_t *mi, mpegts_mux_t *mm, int pid, int type, int weight, void *owner )
+{
+  linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)mi;
+  int change = 0, r;
+
+  if (pid < MPEGTS_FULLMUX_PID)
+    change = mpegts_pid_del(&lfe->lfe_pids, pid, weight) >= 0;
+  else if (pid == MPEGTS_FULLMUX_PID) {
+    change = lfe->lfe_pids.all != 0;
+    lfe->lfe_pids.all = 0;
+  }
+
+  if ((r = mpegts_input_close_pid(mi, mm, pid, type, weight, owner)) <= 0)
+    return r;
+
+  if (change)
+    tvh_write(lfe->lfe_dvr_pipe.wr, "c", 1);
+
+  return r;
 }
 
 static idnode_set_t *
@@ -502,7 +478,6 @@ linuxdvb_frontend_monitor ( void *aux )
   linuxdvb_frontend_t *lfe = aux;
   mpegts_mux_instance_t *mmi = LIST_FIRST(&lfe->mi_mux_active);
   mpegts_mux_t *mm;
-  mpegts_pid_t *mp;
   fe_status_t fe_status;
   signal_state_t status;
   signal_status_t sigstat;
@@ -611,12 +586,6 @@ linuxdvb_frontend_monitor ( void *aux )
 
       /* Table handlers */
       linuxdvb_frontend_default_tables(lfe, (dvb_mux_t*)mm);
-
-      /* Locked - ensure everything is open */
-      pthread_mutex_lock(&lfe->mi_output_lock);
-      RB_FOREACH(mp, &mm->mm_pids, mp_link)
-        linuxdvb_frontend_open_pid0(lfe, mp);
-      pthread_mutex_unlock(&lfe->mi_output_lock);
 
     /* Re-arm (quick) */
     } else {
@@ -865,11 +834,118 @@ linuxdvb_frontend_monitor ( void *aux )
   sigstat.tc_block     = mmi->tii_stats.tc_block;
   sm.sm_type = SMT_SIGNAL_STATUS;
   sm.sm_data = &sigstat;
-  LIST_FOREACH(s, &lfe->mi_transports, s_active_link) {
+  LIST_FOREACH(s, &mmi->mmi_mux->mm_transports, s_active_link) {
     pthread_mutex_lock(&s->s_stream_mutex);
     streaming_pad_deliver(&s->s_streaming_pad, streaming_msg_clone(&sm));
     pthread_mutex_unlock(&s->s_stream_mutex);
   }
+}
+
+typedef struct linuxdvb_pid {
+  int fd;
+  int pid;
+} linuxdvb_pid_t;
+
+static void
+linuxdvb_frontend_open_pid0
+  ( linuxdvb_frontend_t *lfe, const char *name,
+    linuxdvb_pid_t *pids, int pids_size, int pid )
+{
+  struct dmx_pes_filter_params dmx_param;
+  int fd;
+
+  for ( ; pids_size > 0 && pids->fd >= 0; pids_size--, pids++);
+  if (pids_size == 0) {
+    tvherror("linuxdvb", "%s - maximum PID count reached, pid %d ignored",
+             name, pid);
+    return;
+  }
+
+  /* Open DMX */
+  fd = tvh_open(lfe->lfe_dmx_path, O_RDWR, 0);
+  if(fd == -1) {
+    tvherror("linuxdvb", "%s - failed to open dmx for pid %d [e=%s]",
+             name, pid, strerror(errno));
+    return;
+  }
+
+  /* Install filter */
+  tvhtrace("linuxdvb", "%s - open PID %04X (%d) fd %d", name, pid, pid, fd);
+  memset(&dmx_param, 0, sizeof(dmx_param));
+  dmx_param.pid      = pid;
+  dmx_param.input    = DMX_IN_FRONTEND;
+  dmx_param.output   = DMX_OUT_TS_TAP;
+  dmx_param.pes_type = DMX_PES_OTHER;
+  dmx_param.flags    = DMX_IMMEDIATE_START;
+
+  if(ioctl(fd, DMX_SET_PES_FILTER, &dmx_param)) {
+    tvherror("linuxdvb", "%s - failed to config dmx for pid %d [e=%s]",
+             name, pid, strerror(errno));
+    close(fd);
+    return;
+  }
+
+  /* Store */
+  pids->fd = fd;
+  pids->pid = pid;
+}
+
+static void
+linuxdvb_frontend_close_pid0
+  ( linuxdvb_frontend_t *lfe, const char *name,
+    linuxdvb_pid_t *pids, int pids_size, int pid )
+{
+  for ( ; pids_size > 0 && pids->pid != pid;
+          pids_size--, pids++);
+  if (pids_size == 0)
+    return;
+  close(pids->fd);
+  pids->fd = -1;
+  pids->pid = -1;
+}
+
+static int
+linuxdvb_pid_exists ( linuxdvb_pid_t *pids, int pids_size, int pid )
+{
+  int i;
+  for (i = 0; i < pids_size; i++)
+    if (pids[i].fd >= 0 && pids[i].pid == pid)
+      return 1;
+  return 0;
+}
+
+static void
+linuxdvb_update_pids ( linuxdvb_frontend_t *lfe, const char *name,
+                       mpegts_apids_t *tuned, linuxdvb_pid_t *pids,
+                       int pids_size )
+{
+  mpegts_apids_t wpid, padd, pdel;
+  int i, max = MAX(16, lfe->lfe_pids_max);
+
+  pthread_mutex_lock(&lfe->lfe_dvr_lock);
+
+  if (!lfe->lfe_pids.all) {
+    mpegts_pid_weighted(&wpid, &lfe->lfe_pids, max);
+    mpegts_pid_compare(&wpid, tuned, &padd, &pdel);
+    mpegts_pid_done(&wpid);
+    for (i = 0; i < pdel.count; i++)
+      linuxdvb_frontend_close_pid0(lfe, name, pids, pids_size, pdel.pids[i].pid);
+    for (i = 0; i < padd.count; i++)
+      linuxdvb_frontend_open_pid0(lfe, name, pids, pids_size, padd.pids[i].pid);
+    mpegts_pid_done(&padd);
+    mpegts_pid_done(&pdel);
+  }
+
+  if (lfe->lfe_pids.all && !linuxdvb_pid_exists(pids, pids_size, MPEGTS_FULLMUX_PID))
+    linuxdvb_frontend_open_pid0(lfe, name, pids, pids_size, MPEGTS_FULLMUX_PID);
+  else if (!lfe->lfe_pids.all && linuxdvb_pid_exists(pids, pids_size, MPEGTS_FULLMUX_PID))
+    linuxdvb_frontend_close_pid0(lfe, name, pids, pids_size, MPEGTS_FULLMUX_PID);
+
+  mpegts_pid_done(tuned);
+  mpegts_pid_weighted(tuned, &lfe->lfe_pids, max);
+  tuned->all = lfe->lfe_pids.all;
+
+  pthread_mutex_unlock(&lfe->lfe_dvr_lock);
 }
 
 static void *
@@ -877,20 +953,26 @@ linuxdvb_frontend_input_thread ( void *aux )
 {
   linuxdvb_frontend_t *lfe = aux;
   mpegts_mux_instance_t *mmi;
-  int dvr = -1;
-  char buf[256];
-  int nfds;
+  char name[256], b;
   tvhpoll_event_t ev[2];
   tvhpoll_t *efd;
   ssize_t n;
   size_t skip = (MIN(lfe->lfe_skip_bytes, 1024*1024) / 188) * 188;
   size_t counter = 0;
+  linuxdvb_pid_t pids[128];
+  mpegts_apids_t tuned;
   sbuf_t sb;
-  int nodata = 4;
+  int i, dvr = -1, nfds, nodata = 4;
+
+  mpegts_pid_init(&tuned);
+  for (i = 0; i < ARRAY_SIZE(pids); i++) {
+    pids[i].fd = -1;
+    pids[i].pid = -1;
+  }
 
   /* Get MMI */
   pthread_mutex_lock(&lfe->lfe_dvr_lock);
-  lfe->mi_display_name((mpegts_input_t*)lfe, buf, sizeof(buf));
+  lfe->mi_display_name((mpegts_input_t*)lfe, name, sizeof(name));
   mmi = LIST_FIRST(&lfe->mi_mux_active);
   pthread_cond_signal(&lfe->lfe_dvr_cond);
   pthread_mutex_unlock(&lfe->lfe_dvr_lock);
@@ -899,7 +981,7 @@ linuxdvb_frontend_input_thread ( void *aux )
   /* Open DVR */
   dvr = tvh_open(lfe->lfe_dvr_path, O_RDONLY | O_NONBLOCK, 0);
   if (dvr < 0) {
-    tvherror("linuxdvb", "%s - failed to open %s", buf, lfe->lfe_dvr_path);
+    tvherror("linuxdvb", "%s - failed to open %s", name, lfe->lfe_dvr_path);
     return NULL;
   }
 
@@ -915,12 +997,15 @@ linuxdvb_frontend_input_thread ( void *aux )
   /* Allocate memory */
   sbuf_init_fixed(&sb, MIN(MAX(18800, lfe->lfe_ibuf_size), 1880000));
 
+  /* Subscribe PIDs */
+  linuxdvb_update_pids(lfe, name, &tuned, pids, ARRAY_SIZE(pids));
+
   /* Read */
   while (tvheadend_running) {
     nfds = tvhpoll_wait(efd, ev, 1, 150);
     if (nfds == 0) { /* timeout */
       if (nodata == 0) {
-        tvhlog(LOG_WARNING, "linuxdvb", "%s - poll TIMEOUT", buf);
+        tvhlog(LOG_WARNING, "linuxdvb", "%s - poll TIMEOUT", name);
         nodata = 50;
         lfe->lfe_nodata = 1;
       } else {
@@ -928,6 +1013,15 @@ linuxdvb_frontend_input_thread ( void *aux )
       }
     }
     if (nfds < 1) continue;
+    if (ev[0].data.fd == lfe->lfe_dvr_pipe.rd) {
+      if (read(lfe->lfe_dvr_pipe.rd, &b, 1) > 0) {
+        if (b == 'c')
+          linuxdvb_update_pids(lfe, name, &tuned, pids, ARRAY_SIZE(pids));
+        else
+          break;
+      }
+      continue;
+    }
     if (ev[0].data.fd != dvr) break;
 
     nodata = 50;
@@ -938,11 +1032,11 @@ linuxdvb_frontend_input_thread ( void *aux )
       if (ERRNO_AGAIN(errno))
         continue;
       if (errno == EOVERFLOW) {
-        tvhlog(LOG_WARNING, "linuxdvb", "%s - read() EOVERFLOW", buf);
+        tvhlog(LOG_WARNING, "linuxdvb", "%s - read() EOVERFLOW", name);
         continue;
       }
       tvhlog(LOG_ERR, "linuxdvb", "%s - read() error %d (%s)",
-             buf, errno, strerror(errno));
+             name, errno, strerror(errno));
       break;
     }
 
@@ -962,6 +1056,10 @@ linuxdvb_frontend_input_thread ( void *aux )
 
   sbuf_free(&sb);
   tvhpoll_destroy(efd);
+  for (i = 0; i < ARRAY_SIZE(pids); i++)
+    if (pids[i].fd >= 0)
+      close(pids[i].fd);
+  mpegts_pid_done(&tuned);
   close(dvr);
   return NULL;
 }
@@ -1290,9 +1388,11 @@ linuxdvb_frontend_tune0
   memset(&cmds, 0, sizeof(cmds));
   
   /* Tune */
-#define S2CMD(c, d)\
-  cmds[cmdseq.num].cmd      = c;\
-  cmds[cmdseq.num++].u.data = d
+#define S2CMD(c, d) do { \
+  cmds[cmdseq.num].cmd      = c; \
+  cmds[cmdseq.num++].u.data = d; \
+} while (0)
+
   memset(&cmds, 0, sizeof(cmds));
   S2CMD(DTV_DELIVERY_SYSTEM, TR(delsys, delsys_tbl, SYS_UNDEFINED));
   S2CMD(DTV_FREQUENCY,       freq);
@@ -1318,6 +1418,10 @@ linuxdvb_frontend_tune0
       S2CMD(DTV_DVBT2_PLP_ID, dmc->dmc_fe_stream_id);
 #endif
     }
+#if DVB_VER_ATLEAST(5,9)
+    if (lfe->lfe_lna)
+      S2CMD(DTV_LNA, 1);
+#endif
 
   /* DVB-C */
   } else if (lfe->lfe_type == DVB_TYPE_C) {
@@ -1479,11 +1583,11 @@ linuxdvb_frontend_create
   lfe->lfe_name[sizeof(lfe->lfe_name)-1] = '\0';
   lfe->lfe_ibuf_size = 18800;
   lfe->lfe_status_period = 1000;
+  lfe->lfe_pids_max = 32;
   lfe = (linuxdvb_frontend_t*)mpegts_input_create0((mpegts_input_t*)lfe, idc, uuid, conf);
   if (!lfe) return NULL;
 
   /* Callbacks */
-  lfe->mi_is_free      = linuxdvb_frontend_is_free;
   lfe->mi_get_weight   = linuxdvb_frontend_get_weight;
   lfe->mi_get_priority = linuxdvb_frontend_get_priority;
   lfe->mi_get_grace    = linuxdvb_frontend_get_grace;
@@ -1505,6 +1609,7 @@ linuxdvb_frontend_create
   lfe->mi_stop_mux        = linuxdvb_frontend_stop_mux;
   lfe->mi_network_list    = linuxdvb_frontend_network_list;
   lfe->mi_open_pid        = linuxdvb_frontend_open_pid;
+  lfe->mi_close_pid       = linuxdvb_frontend_close_pid;
   lfe->mi_enabled_updated = linuxdvb_frontend_enabled_updated;
 
   /* Adapter link */
@@ -1514,6 +1619,7 @@ linuxdvb_frontend_create
   /* DVR lock/cond */
   pthread_mutex_init(&lfe->lfe_dvr_lock, NULL);
   pthread_cond_init(&lfe->lfe_dvr_cond, NULL);
+  mpegts_pid_init(&lfe->lfe_pids);
  
   /* Satconf */
   if (conf) {

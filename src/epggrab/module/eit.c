@@ -395,9 +395,10 @@ static int _eit_desc_crid
  * EIT Event
  * ***********************************************************************/
 
-static int _eit_process_event
+static int _eit_process_event_one
   ( epggrab_module_t *mod, int tableid,
-    mpegts_service_t *svc, const uint8_t *ptr, int len,
+    mpegts_service_t *svc, channel_t *ch,
+    const uint8_t *ptr, int len,
     int local, int *resched, int *save )
 {
   int save2 = 0;
@@ -409,7 +410,6 @@ static int _eit_process_event
   epg_episode_t *ee;
   epg_serieslink_t *es;
   eit_event_t ev;
-  channel_t *ch = LIST_FIRST(&svc->s_channels)->csm_chn;
 
   if ( len < 12 ) return -1;
 
@@ -446,12 +446,13 @@ static int _eit_process_event
     int r;
     dtag = ptr[0];
     dlen = ptr[1];
-    tvhtrace(mod->id, "  dtag %02X dlen %d", dtag, dlen);
-    tvhlog_hexdump(mod->id, ptr+2, dlen);
 
     dllen -= 2;
     ptr   += 2;
     if (dllen < dlen) break;
+
+    tvhtrace(mod->id, "  dtag %02X dlen %d", dtag, dlen);
+    tvhlog_hexdump(mod->id, ptr, dlen);
 
     switch (dtag) {
       case DVB_DESC_SHORT_EVENT:
@@ -550,6 +551,23 @@ static int _eit_process_event
 
   return ret;
 }
+
+static int _eit_process_event
+  ( epggrab_module_t *mod, int tableid,
+    mpegts_service_t *svc, const uint8_t *ptr, int len,
+    int local, int *resched, int *save )
+{
+  channel_service_mapping_t *csm;
+  int ret = 0;
+
+  if ( len < 12 ) return -1;
+
+  LIST_FOREACH(csm, &svc->s_channels, csm_svc_link)
+    ret = _eit_process_event_one(mod, tableid, svc, csm->csm_chn,
+                                 ptr, len, local, resched, save);
+  return ret;
+}
+
 
 static int
 _eit_callback
@@ -687,7 +705,7 @@ static int _eit_start
 
   /* Freesat (3002/3003) */
   if (!strcmp("uk_freesat", m->id)) {
-    mpegts_table_add(dm, 0, 0, dvb_bat_callback, NULL, "bat", MT_CRC, 3002);
+    mpegts_table_add(dm, 0, 0, dvb_bat_callback, NULL, "bat", MT_CRC, 3002, MPS_WEIGHT_EIT);
     pid = 3003;
 
   /* Viasat Baltic (0x39) */
@@ -699,7 +717,7 @@ static int _eit_start
     pid  = DVB_EIT_PID;
     opts = MT_RECORD;
   }
-  mpegts_table_add(dm, 0, 0, _eit_callback, map, m->id, MT_CRC | opts, pid);
+  mpegts_table_add(dm, 0, 0, _eit_callback, map, m->id, MT_CRC | opts, pid, MPS_WEIGHT_EIT);
   // TODO: might want to limit recording to EITpf only
   tvhlog(LOG_DEBUG, m->id, "installed table handlers");
   return 0;

@@ -42,15 +42,23 @@ mpegts_table_consistency_check ( mpegts_mux_t *mm )
 }
 
 static void
-mpegts_table_fastswitch ( mpegts_mux_t *mm )
+mpegts_table_fastswitch ( mpegts_mux_t *mm, mpegts_table_t *mtm )
 {
   char buf[256];
   mpegts_table_t   *mt;
 
-  if(mm->mm_scan_state != MM_SCAN_STATE_ACTIVE)
-    return;
+  assert(mm == mtm->mt_mux);
 
   pthread_mutex_lock(&mm->mm_tables_lock);
+
+  if ((mtm->mt_flags & MT_ONESHOT) && (mtm->mt_complete && !mtm->mt_working))
+    mm->mm_unsubscribe_table(mm, mtm);
+
+  if (mm->mm_scan_state != MM_SCAN_STATE_ACTIVE) {
+    pthread_mutex_unlock(&mm->mm_tables_lock);
+    return;
+  }
+
   LIST_FOREACH(mt, &mm->mm_tables, mt_link) {
     if (!(mt->mt_flags & MT_QUICKREQ) && !mt->mt_working)
       continue;
@@ -59,6 +67,7 @@ mpegts_table_fastswitch ( mpegts_mux_t *mm )
       return;
     }
   }
+
   pthread_mutex_unlock(&mm->mm_tables_lock);
 
   mpegts_mux_nice_name(mm, buf, sizeof(buf));
@@ -96,7 +105,7 @@ mpegts_table_dispatch
     mt->mt_count++;
 
   if(!ret && mt->mt_flags & (MT_QUICKREQ|MT_FASTSWITCH))
-    mpegts_table_fastswitch(mt->mt_mux);
+    mpegts_table_fastswitch(mt->mt_mux, mt);
 }
 
 void
@@ -166,7 +175,7 @@ mpegts_table_t *
 mpegts_table_add
   ( mpegts_mux_t *mm, int tableid, int mask,
     mpegts_table_callback_t callback, void *opaque,
-    const char *name, int flags, int pid )
+    const char *name, int flags, int pid, int weight )
 {
   mpegts_table_t *mt;
   int subscribe = 1;
@@ -182,6 +191,7 @@ mpegts_table_add
         continue;
       mt->mt_callback   = callback;
       mt->mt_pid        = pid;
+      mt->mt_weight     = weight;
       mt->mt_table      = tableid;
       mm->mm_open_table(mm, mt, 1);
     } else if (pid >= 0) {
@@ -209,6 +219,7 @@ mpegts_table_add
   mt->mt_callback   = callback;
   mt->mt_opaque     = opaque;
   mt->mt_pid        = pid;
+  mt->mt_weight     = weight;
   mt->mt_flags      = flags & ~(MT_SKIPSUBS|MT_SCANSUBS);
   mt->mt_table      = tableid;
   mt->mt_mask       = mask;

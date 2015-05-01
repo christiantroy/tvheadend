@@ -120,6 +120,8 @@ struct linuxdvb_frontend
   th_pipe_t                 lfe_dvr_pipe;
   pthread_mutex_t           lfe_dvr_lock;
   pthread_cond_t            lfe_dvr_cond;
+  mpegts_apids_t            lfe_pids;
+  int                       lfe_pids_max;
  
   /*
    * Tuning
@@ -145,6 +147,7 @@ struct linuxdvb_frontend
   uint32_t                  lfe_ibuf_size;
   uint32_t                  lfe_status_period;
   int                       lfe_old_status;
+  int                       lfe_lna;
 
   /*
    * Satconf (DVB-S only)
@@ -179,6 +182,7 @@ struct linuxdvb_ca
   struct en50221_app_ai             *lca_ai_resource;
   struct en50221_app_ca             *lca_ca_resource;
   struct en50221_app_datetime       *lca_dt_resource;
+  struct en50221_app_mmi            *lca_mmi_resource;
   int                                lca_tc;
   uint16_t                           lca_ai_session_number;
   uint16_t                           lca_ca_session_number;
@@ -325,7 +329,6 @@ void linuxdvb_adapter_done ( void );
 
 void linuxdvb_adapter_save ( linuxdvb_adapter_t *la );
 
-int  linuxdvb_adapter_is_free        ( linuxdvb_adapter_t *la );
 int  linuxdvb_adapter_current_weight ( linuxdvb_adapter_t *la );
 
 linuxdvb_frontend_t *

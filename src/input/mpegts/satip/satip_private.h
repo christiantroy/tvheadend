@@ -62,6 +62,7 @@ struct satip_device
   tvh_hardware_t;
 
   gtimer_t                   sd_destroy_timer;
+  int                        sd_nosave;
 
   /*
    * Adapter info
@@ -159,6 +160,7 @@ struct satip_satconf
   int                        sfc_enabled;
   int                        sfc_position;
   int                        sfc_priority;
+  int                        sfc_grace;
   char                      *sfc_name;
 
   /*
@@ -205,6 +207,9 @@ void satip_satconf_updated_positions
   ( satip_frontend_t *lfe );
 
 int satip_satconf_get_priority
+  ( satip_frontend_t *lfe, mpegts_mux_t *mm );
+
+int satip_satconf_get_grace
   ( satip_frontend_t *lfe, mpegts_mux_t *mm );
 
 int satip_satconf_get_position

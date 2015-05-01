@@ -48,6 +48,7 @@ OPTIONS=(
   "dbus_1:auto"
   "android:no"
   "tsdebug:no"
+  "gtimer_check:no"
 )
 
 #
@@ -160,6 +161,17 @@ check_cc_snippet qsort_r '
 int test(void)
 {
   qsort_r(NULL, 0, 0, NULL, NULL);
+  return 0;
+}
+'
+
+check_cc_snippet stime '
+#include <time.h>
+#define TEST test
+int test(void)
+{
+  time_t t = 1;
+  stime(&t);
   return 0;
 }
 '
