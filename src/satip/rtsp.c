@@ -422,13 +422,13 @@ rtsp_manage_descramble(session_t *rs)
   if (rs->pids.all) {
     LIST_FOREACH(s, &rs->mux->mm_services, s_dvb_mux_link)
       if (rtsp_validate_service(s, NULL))
-        idnode_set_add(found, &s->s_id, NULL);
+        idnode_set_add(found, &s->s_id, NULL, NULL);
   } else {
     for (i = 0; i < rs->pids.count; i++) {
       s = mpegts_service_find_by_pid((mpegts_mux_t *)rs->mux, rs->pids.pids[i].pid);
       if (s != NULL && rtsp_validate_service(s, &rs->pids))
         if (!idnode_set_exists(found, &s->s_id))
-          idnode_set_add(found, &s->s_id, NULL);
+          idnode_set_add(found, &s->s_id, NULL, NULL);
     }
   }
 
@@ -1443,7 +1443,7 @@ rtsp_serve(int fd, void **opaque, struct sockaddr_storage *peer,
 
   memset(&aa, 0, sizeof(aa));
   strcpy(buf, "SAT>IP Client ");
-  tcp_get_ip_str((struct sockaddr *)peer, buf + strlen(buf), sizeof(buf) - strlen(buf));
+  tcp_get_str_from_ip((struct sockaddr *)peer, buf + strlen(buf), sizeof(buf) - strlen(buf));
   aa.aa_representative = buf;
 
   tcp = tcp_connection_launch(fd, rtsp_stream_status, &aa);

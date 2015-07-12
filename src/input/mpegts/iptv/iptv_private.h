@@ -98,6 +98,8 @@ struct iptv_mux
   time_t                mm_iptv_respawn_last;
   char                 *mm_iptv_env;
 
+  uint32_t              mm_iptv_rtp_seq;
+
   sbuf_t                mm_iptv_buffer;
 
   iptv_handler_t       *im_handler;
@@ -128,7 +130,8 @@ void iptv_udp_init     ( void );
 void iptv_rtsp_init    ( void );
 void iptv_pipe_init    ( void );
 
-ssize_t iptv_rtp_read ( iptv_mux_t *im, udp_multirecv_t *um );
+ssize_t iptv_rtp_read ( iptv_mux_t *im, udp_multirecv_t *um,
+                        void (*pkt_cb)(iptv_mux_t *im, uint8_t *buf, int len) );
 
 #endif /* __IPTV_PRIVATE_H__ */
 

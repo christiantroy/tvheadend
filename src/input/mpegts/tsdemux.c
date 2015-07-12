@@ -1,6 +1,6 @@
 /*
  *  tvheadend, MPEG transport stream demuxer
- *  Copyright (C) 2007 Andreas Öman
+ *  Copyright (C) 2007 Andreas Ã–man
  *
  *  This program is free software: you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -102,9 +102,6 @@ ts_recv_packet0
 
     if(!streaming_pad_probe_type(&t->s_streaming_pad, SMT_PACKET))
       continue;
-
-    if(st->es_type == SCT_TELETEXT)
-      teletext_input(t, st, tsb);
 
     if(off <= 188 && t->s_status == SERVICE_RUNNING)
       parse_mpeg_ts((service_t*)t, st, tsb + off, 188 - off, pusi, error);

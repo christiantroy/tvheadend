@@ -26,6 +26,7 @@
 #include "dvb_charset.h"
 #include "bouquet.h"
 #include "fastscan.h"
+#include "descrambler/caid.h"
 #include "descrambler/dvbcam.h"
 #include "tvhtime.h"
 
@@ -502,25 +503,19 @@ dvb_freesat_local_channels
   ( dvb_bat_id_t *bi, const char *dstr, const uint8_t *ptr, int len )
 {
   uint16_t sid, lcn, regionid;
-#if ENABLE_TRACE
   uint16_t unk;
-#endif
   dvb_freesat_svc_t *fs;
   int len2;
 
   while (len > 4) {
     sid = (ptr[0] << 8) | ptr[1];
-#if ENABLE_TRACE
     unk = (ptr[2] << 8) | ptr[3];
-#endif
     len2 = ptr[4];
     ptr += 5;
     len -= 5;
     if (len2 > len)
       break;
-#if ENABLE_TRACE
     tvhtrace(dstr, "      sid %04X (%d) uknown %04X (%d)", sid, sid, unk, unk);
-#endif
     while (len2 > 3) {
       lcn = ((ptr[0] & 0x0f) << 8) | ptr[1];
       regionid = (ptr[2] << 8) | ptr[3];
@@ -746,9 +741,7 @@ dvb_bskyb_local_channels
     const uint8_t *ptr, int len, mpegts_mux_t *mm )
 {
   uint16_t sid, lcn, regionid;
-#if ENABLE_TRACE
   uint16_t unk, stype;
-#endif
   dvb_freesat_region_t *fr;
   dvb_freesat_svc_t *fs;
   dvb_bat_svc_t *bs;
@@ -781,17 +774,13 @@ dvb_bskyb_local_channels
   while (len > 8) {
     sid = (ptr[0] << 8) | ptr[1];
     lcn = (ptr[5] << 8) | ptr[6];
-#if ENABLE_TRACE
     stype = ptr[2];
     unk = (ptr[3] << 8) | ptr[4];
-#endif
     ptr += 9;
     len -= 9;
 
-#if ENABLE_TRACE
     tvhtrace(dstr, "      sid %04X (%d) type %02X (%d) lcn %d unknown %04X (%d)",
              sid, sid, stype, stype, lcn, unk, unk);
-#endif
 
     TAILQ_FOREACH(fs, &bi->fservices, link)
       if (fs->sid == sid && fs->regionid == regionid)
@@ -885,7 +874,8 @@ dvb_pat_callback
       int save = 0;
       if ((s = mpegts_service_find(mm, sid, pid, 1, &save))) {
         if (!s->s_enabled && s->s_auto == SERVICE_AUTO_PAT_MISSING) {
-          tvhinfo("mpegts", "enabling service %s (found in PAT)", s->s_nicename);
+          tvhinfo("mpegts", "enabling service %s [sid %04X/%d] (found in PAT)",
+                  s->s_nicename, s->s_dvb_service_id, s->s_dvb_service_id);
           service_set_enabled((service_t *)s, 1, SERVICE_AUTO_NORMAL);
         }
         s->s_dvb_check_seen = dispatch_clock;
@@ -998,7 +988,8 @@ dvb_pmt_callback
     service_restart((service_t*)s);
 
 #if ENABLE_LINUXDVB_CA
-  dvbcam_pmt_data(s, ptr, len);
+  /* DVBCAM requires full pmt data including header and crc */
+  dvbcam_pmt_data(s, ptr - 3, len + 3 + 4);
 #endif
 
   /* Finish */
@@ -1482,7 +1473,8 @@ dvb_sdt_mux
 
     if (s) {
       if (!s->s_enabled && s->s_auto == SERVICE_AUTO_PAT_MISSING) {
-        tvhinfo("mpegts", "enabling service %s (found in SDT)", s->s_nicename);
+        tvhinfo("mpegts", "enabling service %s [sid %04X/%d] (found in SDT)",
+                s->s_nicename, s->s_dvb_service_id, s->s_dvb_service_id);
         service_set_enabled((service_t *)s, 1, SERVICE_AUTO_NORMAL);
       }
       s->s_dvb_check_seen = dispatch_clock;
@@ -1926,7 +1918,7 @@ psi_desc_add_ca
   int r = 0;
 
   tvhdebug("pmt", "  caid %04X (%s) provider %08X pid %04X",
-           caid, descrambler_caid2name(caid), provid, pid);
+           caid, caid2name(caid), provid, pid);
 
   if((st = service_stream_find((service_t*)t, pid)) == NULL) {
     st = service_stream_create((service_t*)t, pid, SCT_CA);
@@ -2419,7 +2411,7 @@ dvb_tot_callback
  * Install default table sets
  */
 
-void
+static void
 psi_tables_default ( mpegts_mux_t *mm )
 {
   mpegts_table_add(mm, DVB_PAT_BASE, DVB_PAT_MASK, dvb_pat_callback,
@@ -2444,7 +2436,7 @@ psi_tables_dvb_fastscan( void *aux, bouquet_t *bq, const char *name, int pid )
 }
 #endif
 
-void
+static void
 psi_tables_dvb ( mpegts_mux_t *mm )
 {
   mpegts_table_add(mm, DVB_NIT_BASE, DVB_NIT_MASK, dvb_nit_callback,
@@ -2473,7 +2465,7 @@ psi_tables_dvb ( mpegts_mux_t *mm )
 #endif
 }
 
-void
+static void
 psi_tables_atsc_c ( mpegts_mux_t *mm )
 {
   mpegts_table_add(mm, DVB_VCT_C_BASE, DVB_VCT_MASK, atsc_vct_callback,
@@ -2481,10 +2473,61 @@ psi_tables_atsc_c ( mpegts_mux_t *mm )
                    DVB_VCT_PID, MPS_WEIGHT_VCT);
 }
 
-void
+static void
 psi_tables_atsc_t ( mpegts_mux_t *mm )
 {
   mpegts_table_add(mm, DVB_VCT_T_BASE, DVB_VCT_MASK, atsc_vct_callback,
                    NULL, "vct", MT_QUICKREQ | MT_CRC | MT_RECORD,
                    DVB_VCT_PID, MPS_WEIGHT_VCT);
+}
+
+void
+psi_tables_install ( mpegts_input_t *mi, mpegts_mux_t *mm,
+                     dvb_fe_delivery_system_t delsys)
+{
+  if (mi == NULL || mm == NULL)
+    return;
+
+  psi_tables_default(mm);
+
+  switch (delsys) {
+  case DVB_SYS_DVBC_ANNEX_A:
+  case DVB_SYS_DVBC_ANNEX_C:
+  case DVB_SYS_DVBT:
+  case DVB_SYS_DVBT2:
+  case DVB_SYS_DVBS:
+  case DVB_SYS_DVBS2:
+  case DVB_SYS_ISDBS:
+    psi_tables_dvb(mm);
+    break;
+  case DVB_SYS_TURBO:
+  case DVB_SYS_ATSC:
+  case DVB_SYS_ATSCMH:
+    psi_tables_atsc_t(mm);
+    break;
+  case DVB_SYS_DVBC_ANNEX_B:
+    psi_tables_atsc_c(mm);
+    break;
+  case DVB_SYS_NONE:
+  case DVB_SYS_DVBH:
+  case DVB_SYS_ISDBT:
+  case DVB_SYS_ISDBC:
+  case DVB_SYS_DTMB:
+  case DVB_SYS_CMMB:
+  case DVB_SYS_DSS:
+  case DVB_SYS_DAB:
+    break;
+  case DVB_SYS_ATSC_ALL:
+    psi_tables_atsc_c(mm);
+    psi_tables_atsc_t(mm);
+    break;
+  case DVB_SYS_UNKNOWN:
+    psi_tables_dvb(mm);
+    psi_tables_atsc_c(mm);
+    psi_tables_atsc_t(mm);
+    break;
+    break;
+  }
+
+  mpegts_mux_update_pids(mm);
 }

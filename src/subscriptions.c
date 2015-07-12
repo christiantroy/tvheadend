@@ -1,6 +1,6 @@
 /*
  *  tvheadend, transport and subscription functions
- *  Copyright (C) 2007 Andreas Öman
+ *  Copyright (C) 2007 Andreas Ã–man
  *
  *  This program is free software: you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -142,6 +142,9 @@ subscription_unlink_service0(th_subscription_t *s, int reason, int stop)
 
   LIST_REMOVE(s, ths_service_link);
   s->ths_service = NULL;
+
+  if (stop && (s->ths_flags & SUBSCRIPTION_ONESHOT) != 0)
+    subscription_unsubscribe(s, 0);
 }
 
 void
@@ -272,7 +275,7 @@ subscription_start_instance
     tvhtrace("subscription", "%04X: find instance for %s weight %d",
              shortid(s), s->ths_service->s_nicename, s->ths_weight);
   si = service_find_instance(s->ths_service, s->ths_channel,
-                             s->ths_source,
+                             s->ths_source, s->ths_prch,
                              &s->ths_instances, error, s->ths_weight,
                              s->ths_flags, s->ths_timeout,
                              dispatch_clock > s->ths_postpone_end ?
@@ -546,12 +549,14 @@ subscription_input(void *opauqe, streaming_message_t *sm)
 void
 subscription_unsubscribe(th_subscription_t *s, int quiet)
 {
-  service_t *t = s->ths_service;
+  service_t *t;
   char buf[512];
   size_t l = 0;
 
   if (s == NULL)
     return;
+
+  t = s->ths_service;
 
   lock_assert(&global_lock);
 
@@ -580,10 +585,11 @@ subscription_unsubscribe(th_subscription_t *s, int quiet)
   if (s->ths_username)
     tvh_strlcatf(buf, sizeof(buf), l, ", username=\"%s\"", s->ths_username);
   if (s->ths_client)
-    tvh_strlcatf(buf, sizeof(buf), l, ", username=\"%s\"", s->ths_client);
+    tvh_strlcatf(buf, sizeof(buf), l, ", client=\"%s\"", s->ths_client);
   tvhlog(quiet ? LOG_TRACE : LOG_INFO, "subscription", "%04X: %s", shortid(s), buf);
 
   if (t) {
+    s->ths_flags &= ~SUBSCRIPTION_ONESHOT;
     service_remove_subscriber(t, s, SM_CODE_OK);
   }
 
@@ -721,15 +727,15 @@ subscription_create_from_channel_or_service(profile_chain_t *prch,
 
   s = subscription_create(prch, weight, name, flags, subscription_input,
                           hostname, username, client);
-#if ENABLE_TRACE
-  const char *pro_name = prch->prch_pro ? (prch->prch_pro->pro_name ?: "") : "<none>";
-  if (ch)
-    tvhtrace("subscription", "%04X: creating subscription for %s weight %d using profile %s",
-             shortid(s), channel_get_name(ch), weight, pro_name);
-  else
-    tvhtrace("subscription", "%04X: creating subscription for service %s weight %d using profile %s",
-             shortid(s), service->s_nicename, weight, pro_name);
-#endif
+  if (tvhtrace_enabled()) {
+    const char *pro_name = prch->prch_pro ? (prch->prch_pro->pro_name ?: "") : "<none>";
+    if (ch)
+      tvhtrace("subscription", "%04X: creating subscription for %s weight %d using profile %s",
+               shortid(s), channel_get_name(ch), weight, pro_name);
+    else
+      tvhtrace("subscription", "%04X: creating subscription for service %s weight %d using profile %s",
+               shortid(s), service->s_nicename, weight, pro_name);
+  }
   s->ths_channel = ch;
   s->ths_service = service;
   s->ths_source  = ti;

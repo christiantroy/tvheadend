@@ -170,7 +170,7 @@ satip_rtp_thread(void *aux)
   char peername[50];
   int alive = 1, fatal = 0, r;
 
-  tcp_get_ip_str((struct sockaddr *)&rtp->peer, peername, sizeof(peername));
+  tcp_get_str_from_ip((struct sockaddr *)&rtp->peer, peername, sizeof(peername));
   tvhdebug("satips", "RTP streaming to %s:%d open", peername, rtp->port);
 
   pthread_mutex_lock(&sq->sq_mutex);
@@ -185,7 +185,7 @@ satip_rtp_thread(void *aux)
       pthread_cond_wait(&sq->sq_cond, &sq->sq_mutex);
       continue;
     }
-    TAILQ_REMOVE(&sq->sq_queue, sm, sm_link);
+    streaming_queue_remove(sq, sm);
     pthread_mutex_unlock(&sq->sq_mutex);
 
     switch (sm->sm_type) {
@@ -613,7 +613,7 @@ satip_rtcp_thread(void *aux)
                    sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in));
       if (r < 0) {
         err = errno;
-        tcp_get_ip_str((struct sockaddr*)&rtp->peer2, addrbuf, sizeof(addrbuf));
+        tcp_get_str_from_ip((struct sockaddr*)&rtp->peer2, addrbuf, sizeof(addrbuf));
         tvhwarn("satips", "RTCP send to error %s:%d : %s",
                 addrbuf, IP_PORT(rtp->peer2), strerror(err));
       }

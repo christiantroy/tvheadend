@@ -499,6 +499,8 @@ makedirs ( const char *inpath, int mode, gid_t gid, uid_t uid )
         err = mkdir(path, mode);
         if (!err && gid != -1 && uid != -1)
           err = chown(path, uid, gid);
+        if (!err)
+          err = chmod(path, mode); /* override umode */
         tvhtrace("settings", "Creating directory \"%s\" with octal permissions "
                              "\"%o\" gid %d uid %d", path, mode, gid, uid);
       } else {
@@ -712,8 +714,10 @@ deferred_unlink(const char *filename, const char *rootdir)
     tasklet_arm_alloc(deferred_unlink_cb, s);
   else {
     du = calloc(1, sizeof(*du));
-    if (du == NULL)
+    if (du == NULL) {
+      free(s);
       return -ENOMEM;
+    }
     du->filename = s;
     du->rootdir = strdup(rootdir);
     tasklet_arm_alloc(deferred_unlink_dir_cb, du);

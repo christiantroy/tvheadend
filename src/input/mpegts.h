@@ -358,6 +358,7 @@ enum mpegts_mux_epg_flag
   MM_EPG_ONLY_OPENTV_SKY_UK,
   MM_EPG_ONLY_OPENTV_SKY_ITALIA,
   MM_EPG_ONLY_OPENTV_SKY_AUSAT,
+  MM_EPG_ONLY_BULSATCOM_39E,
 };
 #define MM_EPG_LAST MM_EPG_ONLY_OPENTV_SKY_AUSAT
 
@@ -387,6 +388,9 @@ struct mpegts_mux
   mpegts_network_t        *mm_network;
   uint16_t                mm_onid;
   uint16_t                mm_tsid;
+
+  int                     mm_update_pids_flag;
+  gtimer_t                mm_update_pids_timer;
 
   /*
    * Services
@@ -684,8 +688,7 @@ struct mpegts_input
   void (*mi_stop_mux)       (mpegts_input_t*,mpegts_mux_instance_t*);
   void (*mi_open_service)   (mpegts_input_t*,mpegts_service_t*,int flags, int first);
   void (*mi_close_service)  (mpegts_input_t*,mpegts_service_t*);
-  mpegts_pid_t *(*mi_open_pid)(mpegts_input_t*,mpegts_mux_t*,int,int,int,void*);
-  int  (*mi_close_pid)      (mpegts_input_t*,mpegts_mux_t*,int,int,int,void*);
+  void (*mi_update_pids)    (mpegts_input_t*,mpegts_mux_t*);
   void (*mi_create_mux_instance) (mpegts_input_t*,mpegts_mux_t*);
   void (*mi_started_mux)    (mpegts_input_t*,mpegts_mux_instance_t*);
   void (*mi_stopping_mux)   (mpegts_input_t*,mpegts_mux_instance_t*);
@@ -751,8 +754,8 @@ int mpegts_input_is_enabled ( mpegts_input_t * mi, mpegts_mux_t *mm, int flags )
 /* TODO: exposing these class methods here is a bit of a hack */
 const void *mpegts_input_class_network_get  ( void *o );
 int         mpegts_input_class_network_set  ( void *o, const void *p );
-htsmsg_t   *mpegts_input_class_network_enum ( void *o );
-char       *mpegts_input_class_network_rend ( void *o );
+htsmsg_t   *mpegts_input_class_network_enum ( void *o, const char *lang );
+char       *mpegts_input_class_network_rend ( void *o, const char *lang );
 
 int mpegts_mps_cmp( mpegts_pid_sub_t *a, mpegts_pid_sub_t *b );
 
@@ -832,7 +835,7 @@ mpegts_service_t *mpegts_mux_find_service(mpegts_mux_t *ms, uint16_t sid);
 void mpegts_mux_instance_delete ( tvh_input_instance_t *tii );
 
 int mpegts_mux_instance_start
-  ( mpegts_mux_instance_t **mmiptr );
+  ( mpegts_mux_instance_t **mmiptr, service_t *t );
 
 int mpegts_mux_instance_weight ( mpegts_mux_instance_t *mmi );
 
@@ -848,8 +851,9 @@ void mpegts_mux_remove_subscriber(mpegts_mux_t *mm, th_subscription_t *s, int re
 int  mpegts_mux_subscribe(mpegts_mux_t *mm, mpegts_input_t *mi,
                           const char *name, int weight, int flags);
 void mpegts_mux_unsubscribe_by_name(mpegts_mux_t *mm, const char *name);
+th_subscription_t *mpegts_mux_find_subscription_by_name(mpegts_mux_t *mm, const char *name);
 
-void mpegts_mux_unsubscribe_linked(mpegts_input_t *mi);
+void mpegts_mux_unsubscribe_linked(mpegts_input_t *mi, service_t *t);
 
 void mpegts_mux_scan_done ( mpegts_mux_t *mm, const char *buf, int res );
 
@@ -872,6 +876,8 @@ mpegts_mux_find_pid(mpegts_mux_t *mm, int pid, int create)
   else
     return mm->mm_last_mp;
 }
+
+void mpegts_mux_update_pids ( mpegts_mux_t *mm );
 
 void mpegts_input_recv_packets
   (mpegts_input_t *mi, mpegts_mux_instance_t *mmi, sbuf_t *sb,
@@ -974,10 +980,8 @@ int dvb_tot_callback
 int atsc_vct_callback
   (struct mpegts_table *mt, const uint8_t *ptr, int len, int tableid);
 
-void psi_tables_default ( struct mpegts_mux *mm );
-void psi_tables_dvb     ( struct mpegts_mux *mm );
-void psi_tables_atsc_t  ( struct mpegts_mux *mm );
-void psi_tables_atsc_c  ( struct mpegts_mux *mm );
+void psi_tables_install
+  (mpegts_input_t *mi, mpegts_mux_t *mm, dvb_fe_delivery_system_t delsys);
 
 mpegts_service_t *mpegts_service_create0
   ( mpegts_service_t *ms, const idclass_t *class, const char *uuid,
