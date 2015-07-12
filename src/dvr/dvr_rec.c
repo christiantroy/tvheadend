@@ -16,6 +16,8 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "build.h"
+
 #include <stdarg.h>
 #include <pthread.h>
 #include <assert.h>
