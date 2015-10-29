@@ -533,7 +533,7 @@ const idclass_t dvb_mux_dvbs_class =
   .ic_caption    = N_("Linux DVB-S Multiplex"),
   .ic_properties = (const property_t[]){
     {
-      MUX_PROP_STR("delsys", "Delivery System", dvbs, delsys, "DVBS"),
+      MUX_PROP_STR("delsys", N_("Delivery System"), dvbs, delsys, "DVBS"),
     },
     {
       .type     = PT_U32,
@@ -550,7 +550,7 @@ const idclass_t dvb_mux_dvbs_class =
       .set      = dvb_mux_dvbs_class_symbol_rate_set,
     },
     {
-      MUX_PROP_STR("polarisation", "Polarisation", dvbs, polarity, NULL)
+      MUX_PROP_STR("polarisation", N_("Polarization"), dvbs, polarity, NULL)
     },
     {
       .type     = PT_STR,
@@ -562,7 +562,7 @@ const idclass_t dvb_mux_dvbs_class =
       .def.s    = "AUTO",
     },
     {
-      MUX_PROP_STR("fec", "FEC", dvbs, fec, "AUTO")
+      MUX_PROP_STR("fec", N_("FEC"), dvbs, fec, "AUTO")
     },
     {
       .type     = PT_STR,
@@ -662,11 +662,12 @@ const idclass_t dvb_mux_atsc_class =
 static void
 dvb_mux_config_save ( mpegts_mux_t *mm )
 {
+  char ubuf[UUID_HEX_SIZE];
   htsmsg_t *c = htsmsg_create_map();
   mpegts_mux_save(mm, c);
   hts_settings_save(c, "input/dvb/networks/%s/muxes/%s/config",
-                    idnode_uuid_as_str(&mm->mm_network->mn_id),
-                    idnode_uuid_as_str(&mm->mm_id));
+                    idnode_uuid_as_sstr(&mm->mm_network->mn_id),
+                    idnode_uuid_as_str(&mm->mm_id, ubuf));
   htsmsg_destroy(c);
 }
 
@@ -713,11 +714,13 @@ dvb_mux_create_instances ( mpegts_mux_t *mm )
 static void
 dvb_mux_delete ( mpegts_mux_t *mm, int delconf )
 {
+  char ubuf[UUID_HEX_SIZE];
+
   /* Remove config */
   if (delconf)
     hts_settings_remove("input/dvb/networks/%s/muxes/%s",
-                      idnode_uuid_as_str(&mm->mm_network->mn_id),
-                      idnode_uuid_as_str(&mm->mm_id));
+                      idnode_uuid_as_sstr(&mm->mm_network->mn_id),
+                      idnode_uuid_as_str(&mm->mm_id, ubuf));
 
   /* Delete the mux */
   mpegts_mux_delete(mm, delconf);
@@ -739,6 +742,7 @@ dvb_mux_create0
   htsmsg_t *c, *e;
   htsmsg_field_t *f;
   dvb_fe_delivery_system_t delsys;
+  char ubuf[UUID_HEX_SIZE];
 
   /* Class */
   if (ln->ln_type == DVB_TYPE_S) {
@@ -788,8 +792,8 @@ dvb_mux_create0
 
   /* Services */
   c = hts_settings_load_r(1, "input/dvb/networks/%s/muxes/%s/services",
-                         idnode_uuid_as_str(&ln->mn_id),
-                         idnode_uuid_as_str(&mm->mm_id));
+                         idnode_uuid_as_sstr(&ln->mn_id),
+                         idnode_uuid_as_str(&mm->mm_id, ubuf));
   if (c) {
     HTSMSG_FOREACH(f, c) {
       if (!(e = htsmsg_get_map_by_field(f))) continue;

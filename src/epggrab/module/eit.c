@@ -558,14 +558,17 @@ static int _eit_process_event
     int local, int *resched, int *save )
 {
   idnode_list_mapping_t *ilm;
+  channel_t *ch;
   int ret = 0;
 
   if ( len < 12 ) return -1;
 
-  LIST_FOREACH(ilm, &svc->s_channels, ilm_in1_link)
-    ret = _eit_process_event_one(mod, tableid, svc,
-                                 (channel_t *)ilm->ilm_in2,
+  LIST_FOREACH(ilm, &svc->s_channels, ilm_in1_link) {
+    ch = (channel_t *)ilm->ilm_in2;
+    if (!ch->ch_enabled || ch->ch_epg_parent) continue;
+    ret = _eit_process_event_one(mod, tableid, svc, ch,
                                  ptr, len, local, resched, save);
+  }
   return ret;
 }
 
@@ -586,6 +589,7 @@ _eit_callback
   epggrab_ota_mux_t    *ota = NULL;
   mpegts_psi_table_state_t *st;
   th_subscription_t    *ths;
+  char ubuf[UUID_HEX_SIZE];
 
   if (!epggrab_ota_running)
     return -1;
@@ -597,8 +601,8 @@ _eit_callback
   /* Statistics */
   ths = mpegts_mux_find_subscription_by_name(mm, "epggrab");
   if (ths) {
-    ths->ths_bytes_in += len;
-    ths->ths_bytes_out += len;
+    subscription_add_bytes_in(ths, len);
+    subscription_add_bytes_out(ths, len);
   }
 
   /* Validate */
@@ -617,7 +621,7 @@ _eit_callback
   // TODO: extra ID should probably include onid
 
   /* Register interest */
-  if (tableid >= 0x50)
+  if (tableid == 0x4e || tableid >= 0x50)
     ota = epggrab_ota_register((epggrab_module_ota_t*)mod, NULL, mm);
 
   /* Begin */
@@ -640,8 +644,8 @@ _eit_callback
     mm = mpegts_network_find_mux(mm->mm_network, onid, tsid);
 
   } else {
-    if (mm->mm_tsid != tsid ||
-        mm->mm_onid != onid) {
+    if ((mm->mm_tsid != tsid || mm->mm_onid != onid) &&
+        !mm->mm_eit_tsid_nocheck) {
       if (mm->mm_onid != MPEGTS_ONID_NONE &&
           mm->mm_tsid != MPEGTS_TSID_NONE)
         tvhtrace("eit",
@@ -667,7 +671,7 @@ _eit_callback
 
   /* Register this */
   if (ota)
-    epggrab_ota_service_add(map, ota, idnode_uuid_as_str(&svc->s_id), 1);
+    epggrab_ota_service_add(map, ota, idnode_uuid_as_str(&svc->s_id, ubuf), 1);
 
   /* No point processing */
   if (!LIST_FIRST(&svc->s_channels))
@@ -788,11 +792,11 @@ void eit_init ( void )
     .tune  = _eit_tune,
   };
 
-  epggrab_module_ota_create(NULL, "eit", "EIT: DVB Grabber", 1, &ops, NULL);
-  epggrab_module_ota_create(NULL, "uk_freesat", "UK: Freesat", 5, &ops, NULL);
-  epggrab_module_ota_create(NULL, "uk_freeview", "UK: Freeview", 5, &ops, NULL);
-  epggrab_module_ota_create(NULL, "viasat_baltic", "VIASAT: Baltic", 5, &ops, NULL);
-  epggrab_module_ota_create(NULL, "Bulsatcom_39E", "Bulsatcom: Bula 39E", 5, &ops, NULL);
+  epggrab_module_ota_create(NULL, "eit", NULL, "EIT: DVB Grabber", 1, &ops);
+  epggrab_module_ota_create(NULL, "uk_freesat", NULL, "UK: Freesat", 5, &ops);
+  epggrab_module_ota_create(NULL, "uk_freeview", NULL, "UK: Freeview", 5, &ops);
+  epggrab_module_ota_create(NULL, "viasat_baltic", NULL, "VIASAT: Baltic", 5, &ops);
+  epggrab_module_ota_create(NULL, "Bulsatcom_39E", NULL, "Bulsatcom: Bula 39E", 5, &ops);
 }
 
 void eit_done ( void )

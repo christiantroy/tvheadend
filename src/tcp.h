@@ -56,6 +56,8 @@ void tcp_server_preinit(int opt_ipv6);
 void tcp_server_init(void);
 void tcp_server_done(void);
 
+int socket_set_dscp(int sockfd, uint32_t dscp, char *errbuf, size_t errbufsize);
+
 int tcp_connect(const char *hostname, int port, const char *bindaddr,
                 char *errbuf, size_t errbufsize, int timeout);
 
@@ -88,6 +90,8 @@ int tcp_read_timeout(int fd, void *buf, size_t len, int timeout);
 char *tcp_get_str_from_ip(const struct sockaddr *sa, char *dst, size_t maxlen);
 
 struct sockaddr *tcp_get_ip_from_str(const char *str, struct sockaddr *sa);
+
+int tcp_socket_dead(int fd);
 
 struct access;
 

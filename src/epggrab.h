@@ -39,6 +39,7 @@ LIST_HEAD(epggrab_module_list, epggrab_module);
 typedef struct epggrab_module_list epggrab_module_list_t;
 
 struct mpegts_mux;
+struct channel;
 
 /* **************************************************************************
  * Grabber Stats
@@ -71,37 +72,39 @@ typedef struct epggrab_stats
 RB_HEAD(epggrab_channel_tree, epggrab_channel);
 typedef struct epggrab_channel_tree epggrab_channel_tree_t;
 
+TAILQ_HEAD(epggrab_channel_queue, epggrab_channel);
+
 /*
  * Grab channel
  */
 typedef struct epggrab_channel
 {
-  RB_ENTRY(epggrab_channel) link;     ///< Global link
+  idnode_t                  idnode;
+  TAILQ_ENTRY(epggrab_channel) all_link; ///< Global link
+  RB_ENTRY(epggrab_channel) link;     ///< Global tree link
   epggrab_module_t          *mod;     ///< Linked module
 
+  int                       updated;  ///< EPG channel was updated
+  int                       enabled;  ///< Enabled/disabled
   char                      *id;      ///< Grabber's ID
 
   char                      *name;    ///< Channel name
+  htsmsg_t                  *names;   ///< List of all channel names for grabber's ID
+  htsmsg_t                  *newnames;///< List of all channel names for grabber's ID (scan)
   char                      *icon;    ///< Channel icon
-  int                       major;    ///< Channel major number
-  int                       minor;    ///< Channel minor number
+  char                      *comment; ///< Channel comment (EPG)
+  int64_t                   lcn;      ///< Channel number (split)
 
-  LIST_HEAD(,epggrab_channel_link) channels; ///< Mapped channels
+  time_t                    laststamp;///< Last update timestamp
+
+  int                       only_one; ///< Map to only one channel (auto)
+  idnode_list_head_t        channels; ///< Mapped channels (1 = epggrab channel, 2 = channel)
 } epggrab_channel_t;
-
-typedef struct epggrab_channel_link
-{
-  int                               ecl_mark;
-  struct channel                    *ecl_channel;
-  struct epggrab_channel            *ecl_epggrab;
-  LIST_ENTRY(epggrab_channel_link)  ecl_chn_link;
-  LIST_ENTRY(epggrab_channel_link)  ecl_epg_link;
-} epggrab_channel_link_t;
 
 /*
  * Access functions
  */
-htsmsg_t*         epggrab_channel_list      ( int ota );
+htsmsg_t *epggrab_channel_list      ( int ota );
 
 /*
  * Mutators
@@ -114,8 +117,9 @@ int epggrab_channel_set_number   ( epggrab_channel_t *ch, int major, int minor )
  * Updated/link
  */
 void epggrab_channel_updated     ( epggrab_channel_t *ch );
-void epggrab_channel_link_delete ( epggrab_channel_link_t *ecl, int delconf );
-int  epggrab_channel_link        ( epggrab_channel_t *ec, struct channel *ch );
+void epggrab_channel_link_delete ( epggrab_channel_t *ec, struct channel *ch, int delconf );
+int  epggrab_channel_link        ( epggrab_channel_t *ec, struct channel *ch, void *origin );
+int  epggrab_channel_map         ( idnode_t *ec, idnode_t *ch, void *origin );
 
 /* ID */
 const char *epggrab_channel_get_id ( epggrab_channel_t *ch );
@@ -135,6 +139,7 @@ int epggrab_channel_is_ota ( epggrab_channel_t *ec );
  */
 struct epggrab_module
 {
+  idnode_t                     idnode;
   LIST_ENTRY(epggrab_module)   link;      ///< Global list link
 
   enum {
@@ -143,22 +148,18 @@ struct epggrab_module
     EPGGRAB_EXT,
   }                            type;      ///< Grabber type
   const char                   *id;       ///< Module identifier
+  const char                   *saveid;   ///< Module save identifier
   const char                   *name;     ///< Module name (for display)
-  uint8_t                      enabled;   ///< Whether the module is enabled
+  int                          enabled;   ///< Whether the module is enabled
+  int                          active;    ///< Whether the module is active
   int                          priority;  ///< Priority of the module
-  epggrab_channel_tree_t       *channels; ///< Channel list
+  epggrab_channel_tree_t       channels;  ///< Channel list
 
-  /* Enable/Disable */
-  int       (*enable)  ( void *m, uint8_t e );
+  /* Activate */
+  int       (*activate) ( void *m, int activate );
 
   /* Free */
   void      (*done)    ( void *m );
-
-  /* Channel listings */
-  void      (*ch_add)  ( void *m, struct channel *ch );
-  void      (*ch_rem)  ( void *m, struct channel *ch );
-  void      (*ch_mod)  ( void *m, struct channel *ch );
-  void      (*ch_save) ( void *m, epggrab_channel_t *ch );
 };
 
 /*
@@ -244,8 +245,6 @@ struct epggrab_module_ota
 {
   epggrab_module_t               ;      ///< Parent object
 
-  //TAILQ_HEAD(, epggrab_ota_mux)  muxes; ///< List of related muxes
-
   /* Transponder tuning */
   int  (*start) ( epggrab_ota_map_t *map, struct mpegts_mux *mm );
   int  (*tune)  ( epggrab_ota_map_t *map, epggrab_ota_mux_t *om,
@@ -253,10 +252,38 @@ struct epggrab_module_ota
 };
 
 /*
+ *
+ */
+typedef struct epggrab_conf {
+  idnode_t              idnode;
+  char                 *cron;
+  uint32_t              channel_rename;
+  uint32_t              channel_renumber;
+  uint32_t              channel_reicon;
+  uint32_t              epgdb_periodicsave;
+  char                 *ota_cron;
+  uint32_t              ota_timeout;
+  uint32_t              ota_initial;
+} epggrab_conf_t;
+
+/*
+ *
+ */
+extern epggrab_conf_t epggrab_conf;
+extern const idclass_t epggrab_class;
+extern const idclass_t epggrab_class_mod;
+extern const idclass_t epggrab_class_mod_int;
+extern const idclass_t epggrab_class_mod_ext;
+extern const idclass_t epggrab_class_mod_ota;
+extern const idclass_t epggrab_channel_class;
+extern struct epggrab_channel_queue epggrab_channel_entries;
+
+/*
  * Access the Module list
  */
 epggrab_module_t* epggrab_module_find_by_id ( const char *id );
-htsmsg_t*         epggrab_module_list       ( void );
+const char * epggrab_module_type(epggrab_module_t *mod);
+const char * epggrab_module_get_status(epggrab_module_t *mod);
 
 /* **************************************************************************
  * Setup/Configuration
@@ -268,32 +295,13 @@ htsmsg_t*         epggrab_module_list       ( void );
 extern epggrab_module_list_t epggrab_modules;
 extern pthread_mutex_t       epggrab_mutex;
 extern int                   epggrab_running;
-extern char                 *epggrab_cron;
-extern epggrab_module_int_t* epggrab_module;
-extern uint32_t              epggrab_channel_rename;
-extern uint32_t              epggrab_channel_renumber;
-extern uint32_t              epggrab_channel_reicon;
-extern uint32_t              epggrab_epgdb_periodicsave;
 extern int                   epggrab_ota_running;
-extern char                 *epggrab_ota_cron;
-extern uint32_t              epggrab_ota_timeout;
-extern uint32_t              epggrab_ota_initial;
 
 /*
  * Set configuration
  */
-int  epggrab_set_cron             ( const char *cron );
-int  epggrab_set_module           ( epggrab_module_t *mod );
-int  epggrab_set_module_by_id     ( const char *id );
-int  epggrab_set_channel_rename   ( uint32_t e );
-int  epggrab_set_channel_renumber ( uint32_t e );
-int  epggrab_set_channel_reicon   ( uint32_t e );
-int  epggrab_set_periodicsave     ( uint32_t e );
-int  epggrab_enable_module        ( epggrab_module_t *mod, uint8_t e );
-int  epggrab_enable_module_by_id  ( const char *id, uint8_t e );
-int  epggrab_ota_set_cron         ( const char *cron, int lock );
-int  epggrab_ota_set_timeout      ( uint32_t e );
-int  epggrab_ota_set_initial      ( uint32_t e );
+int epggrab_activate_module       ( epggrab_module_t *mod, int activate );
+void epggrab_ota_set_cron         ( void );
 void epggrab_ota_trigger          ( int secs );
 
 /*

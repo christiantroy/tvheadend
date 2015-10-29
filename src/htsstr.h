@@ -27,17 +27,23 @@ char *htsstr_unescape(char *str);
 
 char *htsstr_unescape_to(const char *src, char *dst, size_t dstlen);
 
+const char *htsstr_escape_find(const char *src, size_t upto_index);
+
 char **htsstr_argsplit(const char *str);
 
 void htsstr_argsplit_free(char **argv);
 
 typedef struct {
   const char *id;
-  const char *(*getval)(const char *id, const void *aux);
+  const char *(*getval)(const char *id, const void *aux, char *tmp, size_t tmplen);
 } htsstr_substitute_t;
+
+const char *
+htsstr_substitute_find(const char *src, int first);
 
 char *
 htsstr_substitute(const char *src, char *dst, size_t dstlen,
-                  int first, htsstr_substitute_t *sub, const void *aux);
+                  int first, htsstr_substitute_t *sub, const void *aux,
+                  char *tmp, size_t tmplen);
 
 #endif /* HTSSTR_H__ */

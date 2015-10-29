@@ -154,7 +154,7 @@ const tvh_caps_t tvheadend_capabilities[] = {
   { "imagecache", (uint32_t*)&imagecache_conf.enabled },
 #endif
 #if ENABLE_TIMESHIFT
-  { "timeshift", &timeshift_enabled },
+  { "timeshift", (uint32_t *)&timeshift_conf.enabled },
 #endif
 #if ENABLE_TRACE
   { "trace",     NULL },
@@ -483,7 +483,24 @@ show_usage
   exit(0);
 }
 
+/**
+ *
+ */
+time_t
+dispatch_clock_update(struct timespec *ts)
+{
+  struct timespec ts1;
+  if (ts == NULL)
+    ts = &ts1;
+  clock_gettime(CLOCK_REALTIME, ts);
 
+  /* 1sec stuff */
+  if (ts->tv_sec > dispatch_clock) {
+    dispatch_clock = ts->tv_sec;
+    comet_flush(); /* Flush idle comet mailboxes */
+  }
+  return dispatch_clock;
+}
 
 /**
  *
@@ -501,14 +518,7 @@ mainloop(void)
 #endif
 
   while(tvheadend_running) {
-    clock_gettime(CLOCK_REALTIME, &ts);
-
-    /* 1sec stuff */
-    if (ts.tv_sec > dispatch_clock) {
-      dispatch_clock = ts.tv_sec;
-
-      comet_flush(); /* Flush idle comet mailboxes */
-    }
+    dispatch_clock_update(&ts);
 
     /* Global timers */
     pthread_mutex_lock(&global_lock);
@@ -580,6 +590,11 @@ main(int argc, char **argv)
   uid_t uid = -1;
   char buf[512];
   FILE *pidfile = NULL;
+  static struct {
+    pid_t pid;
+    struct timeval tv;
+    uint8_t ru[32];
+  } randseed;
   extern int dvb_bouquets_parse;
 
   main_tid = pthread_self();
@@ -615,6 +630,7 @@ main(int argc, char **argv)
               opt_threadid     = 0,
               opt_libav        = 0,
               opt_ipv6         = 0,
+              opt_nosatip      = 0,
               opt_satip_rtsp   = 0,
 #if ENABLE_TSFILE
               opt_tsfile_tuner = 0,
@@ -665,7 +681,7 @@ main(int argc, char **argv)
       OPT_BOOL, &opt_dbus_session },
 #endif
 #if ENABLE_LINUXDVB
-    { 'a', "adapters",  N_("Only use specified DVB adapters (comma separated)"),
+    { 'a', "adapters",  N_("Only use specified DVB adapters (comma separated, -1 = none)"),
       OPT_STR, &opt_dvb_adapters },
 #endif
 #if ENABLE_SATIP_SERVER
@@ -674,7 +690,9 @@ main(int argc, char **argv)
       OPT_INT, &opt_satip_rtsp },
 #endif
 #if ENABLE_SATIP_CLIENT
-    {   0, "satip_xml", N_("URL with the SAT>IP server XML location"),
+    {   0, "nosatip",    N_("Disable SAT>IP client"),
+      OPT_BOOL, &opt_nosatip },
+    {   0, "satip_xml",  N_("URL with the SAT>IP server XML location"),
       OPT_STR_LIST, &opt_satip_xml },
 #endif
     {   0, NULL,         N_("Server Connectivity"),    OPT_BOOL, NULL         },
@@ -747,9 +765,11 @@ main(int argc, char **argv)
     /* Find option */
     cmdline_opt_t *opt
       = cmdline_opt_find(cmdline_opts, ARRAY_SIZE(cmdline_opts), argv[i]);
-    if (!opt)
+    if (!opt) {
       show_usage(argv[0], cmdline_opts, ARRAY_SIZE(cmdline_opts),
                  _("invalid option specified [%s]"), argv[i]);
+      continue;
+    }
 
     /* Process */
     if (opt->type == OPT_BOOL)
@@ -785,19 +805,24 @@ main(int argc, char **argv)
     char *r = NULL;
     char *dvb_adapters = strdup(opt_dvb_adapters);
     adapter_mask = 0x0;
+    i = 0;
     p = strtok_r(dvb_adapters, ",", &r);
     while (p) {
       int a = strtol(p, &e, 10);
-      if (*e != 0 || a < 0 || a > 31) {
+      if (*e != 0 || a > 31) {
         fprintf(stderr, _("Invalid adapter number '%s'\n"), p);
         free(dvb_adapters);
         return 1;
       }
-      adapter_mask |= (1 << a);
+      i = 1;
+      if (a < 0)
+        adapter_mask = 0;
+      else
+        adapter_mask |= (1 << a);
       p = strtok_r(NULL, ",", &r);
     }
     free(dvb_adapters);
-    if (!adapter_mask) {
+    if (!i) {
       fprintf(stderr, "%s", _("No adapters specified!\n"));
       return 1;
     }
@@ -960,6 +985,11 @@ main(int argc, char **argv)
   OPENSSL_config(NULL);
   SSL_load_error_strings();
   SSL_library_init();
+  /* Rand seed */
+  randseed.pid = main_tid;
+  gettimeofday(&randseed.tv, NULL);
+  uuid_random(randseed.ru, sizeof(randseed.ru));
+  RAND_seed(&randseed, sizeof(randseed));
 
   /* Initialise configuration */
   notify_init();
@@ -973,7 +1003,7 @@ main(int argc, char **argv)
 
   epg_in_load = 1;
 
-  tvhthread_create(&tasklet_tid, NULL, tasklet_thread, NULL);
+  tvhthread_create(&tasklet_tid, NULL, tasklet_thread, NULL, "tasklet");
 
   dbus_server_init(opt_dbus, opt_dbus_session);
 
@@ -1001,7 +1031,8 @@ main(int argc, char **argv)
   dvb_init();
 
 #if ENABLE_MPEGTS
-  mpegts_init(adapter_mask, &opt_satip_xml, &opt_tsfile, opt_tsfile_tuner);
+  mpegts_init(adapter_mask, opt_nosatip, &opt_satip_xml,
+              &opt_tsfile, opt_tsfile_tuner);
 #endif
 
   channel_init();
@@ -1204,4 +1235,20 @@ void
 scopedunlock(pthread_mutex_t **mtxp)
 {
   pthread_mutex_unlock(*mtxp);
+}
+
+
+/**
+ *
+ */
+htsmsg_t *tvheadend_capabilities_list(int check)
+{
+  const tvh_caps_t *tc = tvheadend_capabilities;
+  htsmsg_t *r = htsmsg_create_list();
+  while (tc->name) {
+    if (!check || !tc->enabled || *tc->enabled)
+      htsmsg_add_str(r, NULL, tc->name);
+    tc++;
+  }
+  return r;
 }

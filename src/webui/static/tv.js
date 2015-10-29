@@ -238,6 +238,11 @@ tv.ui.VideoPlayer = Ext.extend(Ext.Panel, (function() {
             this.video.dom.pause();
         },
 
+        muteToggle: function() {
+            this.video.dom.muted = !this.video.dom.muted;
+            return this.video.dom.muted;
+        },
+
         setVolume: function(vol) {
             this.video.dom.volume = vol / 100.0;
         },
@@ -458,7 +463,7 @@ tv.app = function() {
     // Play button that calls the "I've pressed Enter!" event when clicked
 
             var playButton = new Ext.Button({
-                text: 'Play Selected Channel',
+                text: _('Play Selected Channel'),
                 handler: function() {
                     chList.fireEvent('naventer');
                 }

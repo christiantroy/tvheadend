@@ -280,10 +280,12 @@ avahi_thread(void *aux)
 
     ac = avahi_client_new(avahi_poll, AVAHI_CLIENT_NO_FAIL, client_callback, NULL, NULL);
 
-    while((avahi_do_restart == 0) &&
-          (avahi_simple_poll_iterate(avahi_asp, -1) == 0));
+    if (ac) {
+      while((avahi_do_restart == 0) &&
+            (avahi_simple_poll_iterate(avahi_asp, -1) == 0));
 
-    avahi_client_free(ac);
+      avahi_client_free(ac);
+    }
 
     name = NULL;
     free(name2);
@@ -301,7 +303,7 @@ pthread_t avahi_tid;
 void
 avahi_init(void)
 {
-  tvhthread_create(&avahi_tid, NULL, avahi_thread, NULL);
+  tvhthread_create(&avahi_tid, NULL, avahi_thread, NULL, "avahi");
 }
 
 void

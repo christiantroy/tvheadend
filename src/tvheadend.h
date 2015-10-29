@@ -51,22 +51,7 @@
 
 #define ERRNO_AGAIN(e) ((e) == EAGAIN || (e) == EINTR || (e) == EWOULDBLOCK)
 
-#if ENABLE_ANDROID
-#define S_IEXEC S_IXUSR
-#include <time64.h>
-// 32-bit Android has only timegm64() and not timegm().
-// We replicate the behaviour of timegm() when the result overflows time_t.
-static inline time_t timegm(struct tm* const t);
-time_t timegm(struct tm* const t) {
-  // time_t is signed on Android.
-  static const time_t kTimeMax = ~(1L << (sizeof(time_t) * CHAR_BIT - 1));
-  static const time_t kTimeMin = (1L << (sizeof(time_t) * CHAR_BIT - 1));
-  time64_t result = timegm64(t);
-  if (result < kTimeMin || result > kTimeMax)
-    return -1;
-  return result;
-}
-#endif
+#include "compat.h"
 
 typedef struct {
   const char     *name;
@@ -78,19 +63,7 @@ extern const char      *tvheadend_cwd;
 extern const char      *tvheadend_webroot;
 extern const tvh_caps_t tvheadend_capabilities[];
 
-static inline htsmsg_t *tvheadend_capabilities_list(int check)
-{
-  int i = 0;
-  htsmsg_t *r = htsmsg_create_list();
-  while (tvheadend_capabilities[i].name) {
-    if (!check ||
-        !tvheadend_capabilities[i].enabled ||
-        *tvheadend_capabilities[i].enabled)
-      htsmsg_add_str(r, NULL, tvheadend_capabilities[i].name);
-    i++;
-  }
-  return r;
-}
+htsmsg_t *tvheadend_capabilities_list(int check);
 
 typedef struct str_list
 {
@@ -257,7 +230,7 @@ typedef enum {
   SCT_VORBIS,
   SCT_HEVC,
   SCT_VP9,
-  SCT_LAST = SCT_HEVC
+  SCT_LAST = SCT_VP9
 } streaming_component_type_t;
 
 #define SCT_MASK(t) (1 << (t))
@@ -296,6 +269,21 @@ typedef struct signal_status {
   int ec_block; /* error block count */
   int tc_block; /* total block count */
 } signal_status_t;
+
+/**
+ * Descramble info
+ */
+typedef struct descramble_info {
+  uint16_t pid;
+  uint16_t caid;
+  uint32_t provid;
+  uint32_t ecmtime;
+  uint16_t hops;
+  char cardsystem[128];
+  char reader    [128];
+  char from      [128];
+  char protocol  [128];
+} descramble_info_t;
 
 /**
  * Streaming skip
@@ -383,6 +371,13 @@ typedef enum {
   SMT_SIGNAL_STATUS,
 
   /**
+   * Descrambler info message
+   *
+   * Notification about descrambler
+   */
+  SMT_DESCRAMBLE_INFO,
+
+  /**
    * Streaming stop.
    *
    * End of streaming. If sm_code is 0 this was a result to an
@@ -398,6 +393,13 @@ typedef enum {
    * sm_code indicates reason. Scheduler will try to restart
    */
   SMT_NOSTART,
+
+  /**
+   * Streaming unable to start (non-fatal).
+   *
+   * sm_code indicates reason. Scheduler will try to restart
+   */
+  SMT_NOSTART_WARN,
 
   /**
    * Raw MPEG TS data
@@ -440,6 +442,7 @@ typedef enum {
 #define SM_CODE_INVALID_TARGET            104
 #define SM_CODE_USER_ACCESS               105
 #define SM_CODE_USER_LIMIT                106
+#define SM_CODE_WEAK_STREAM               107
 
 #define SM_CODE_NO_FREE_ADAPTER           200
 #define SM_CODE_MUX_NOT_ENABLED           201
@@ -556,6 +559,7 @@ static inline unsigned int tvh_strhash(const char *s, unsigned int mod)
 
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
+#define MINMAX(a,mi,ma) MAX(mi, MIN(ma, a))
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
 
 void tvh_str_set(char **strp, const char *src);
@@ -635,12 +639,10 @@ static inline void mystrset(char **p, const char *s)
 
 void doexit(int x);
 
-int tvhthread_create0
+int tvhthread_create
   (pthread_t *thread, const pthread_attr_t *attr,
    void *(*start_routine) (void *), void *arg,
    const char *name);
-
-#define tvhthread_create(a, b, c, d)  tvhthread_create0(a, b, c, d, #c)
 
 int tvh_open(const char *pathname, int flags, mode_t mode);
 
@@ -747,12 +749,15 @@ char *regexp_escape ( const char *str );
 
 /* URL decoding */
 char to_hex(char code);
-char *url_encode(char *str);
+char *url_encode(const char *str);
 
 int mpegts_word_count(const uint8_t *tsb, int len, uint32_t mask);
 
 int deferred_unlink(const char *filename, const char *rootdir);
 
+void sha1_calc(uint8_t *dst, const uint8_t *d1, size_t d1_len, const uint8_t *d2, size_t d2_len);
+
+uint32_t gcdU32(uint32_t a, uint32_t b);
 static inline int32_t deltaI32(int32_t a, int32_t b) { return (a > b) ? (a - b) : (b - a); }
 static inline uint32_t deltaU32(uint32_t a, uint32_t b) { return (a > b) ? (a - b) : (b - a); }
   
@@ -785,4 +790,4 @@ void tvh_qsort_r(void *base, size_t nmemb, size_t size, int (*compar)(const void
 #define PRItime_t       "ld"
 #endif
 
-#endif /* TV_HEAD_H */
+#endif /* TVHEADEND_H */

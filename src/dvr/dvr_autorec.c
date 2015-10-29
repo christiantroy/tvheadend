@@ -34,26 +34,75 @@
 #include "epg.h"
 #include "htsp_server.h"
 
-static int dvr_autorec_in_init = 0;
-
 struct dvr_autorec_entry_queue autorec_entries;
 
 /**
  * Unlink - and remove any unstarted
  */
-static void
-dvr_autorec_purge_spawns(dvr_autorec_entry_t *dae, int del)
+static epg_broadcast_t **
+dvr_autorec_purge_spawns(dvr_autorec_entry_t *dae, int del, int disabled)
 {
   dvr_entry_t *de;
+  epg_broadcast_t **bcast = NULL, **nbcast;
+  int i = 0, size = 0;
 
   while((de = LIST_FIRST(&dae->dae_spawns)) != NULL) {
     LIST_REMOVE(de, de_autorec_link);
     de->de_autorec = NULL;
     if (!del) continue;
-    if (de->de_sched_state == DVR_SCHEDULED)
-      dvr_entry_cancel(de);
-    else
+    if (de->de_sched_state == DVR_SCHEDULED) {
+      if (disabled && !de->de_enabled && de->de_bcast) {
+        if (i >= size - 1) {
+          nbcast = realloc(bcast, (size + 16) * sizeof(epg_broadcast_t *));
+          if (nbcast != NULL) {
+            bcast = nbcast;
+            size += 16;
+            bcast[i++] = de->de_bcast;
+          }
+        } else {
+          bcast[i++] = de->de_bcast;
+        }
+      }
+      dvr_entry_cancel(de, 0);
+    } else
       dvr_entry_save(de);
+  }
+  if (bcast)
+    bcast[i] = NULL;
+  return bcast;
+}
+
+/**
+ * Handle maxcount
+ */
+void
+dvr_autorec_completed(dvr_entry_t *de, int error_code)
+{
+  uint32_t count, total = 0;
+  dvr_entry_t *de_prev;
+  dvr_autorec_entry_t *dae = de->de_autorec;
+
+  if (dae == NULL) return;
+  if (dae->dae_max_count <= 0) return;
+  while (1) {
+    count = 0;
+    de_prev = NULL;
+    LIST_FOREACH(de, &dae->dae_spawns, de_autorec_link) {
+      if (de->de_sched_state != DVR_COMPLETED) continue;
+      if (dvr_get_filesize(de) < 0) continue;
+      if (de_prev && de_prev->de_start > de->de_start)
+        de_prev = de;
+      count++;
+    }
+    if (total == 0)
+      total = count;
+    if (count < dae->dae_max_count)
+      break;
+    if (de_prev) {
+      tvhinfo("dvr", "autorec %s removing recordings %s (allowed count %u total %u)",
+              dae->dae_name, idnode_uuid_as_sstr(&de_prev->de_id), dae->dae_max_count, total);
+      dvr_entry_cancel_delete(de_prev, 0);
+    }
   }
 }
 
@@ -227,7 +276,7 @@ dvr_autorec_entry_t*
 dvr_autorec_create_htsp(const char *dvr_config_name, const char *title, int fulltext,
                             channel_t *ch, uint32_t enabled, int32_t start, int32_t start_window,
                             uint32_t weekdays, time_t start_extra, time_t stop_extra,
-                            dvr_prio_t pri, int retention,
+                            dvr_prio_t pri, int retention, int removal,
                             int min_duration, int max_duration, dvr_autorec_dedup_t dup_detect,
                             const char *owner, const char *creator, const char *comment, 
                             const char *name, const char *directory)
@@ -240,6 +289,7 @@ dvr_autorec_create_htsp(const char *dvr_config_name, const char *title, int full
 
   htsmsg_add_u32(conf, "enabled",     enabled > 0 ? 1 : 0);
   htsmsg_add_u32(conf, "retention",   retention);
+  htsmsg_add_u32(conf, "removal",     removal);
   htsmsg_add_u32(conf, "pri",         pri);
   htsmsg_add_u32(conf, "minduration", min_duration);
   htsmsg_add_u32(conf, "maxduration", max_duration);
@@ -260,7 +310,7 @@ dvr_autorec_create_htsp(const char *dvr_config_name, const char *title, int full
   if (start_window >= 0)
     htsmsg_add_s32(conf, "start_window", start_window);
   if (ch)
-    htsmsg_add_str(conf, "channel", idnode_uuid_as_str(&ch->ch_id));
+    htsmsg_add_str(conf, "channel", idnode_uuid_as_sstr(&ch->ch_id));
 
   int i;
   for (i = 0; i < 7; i++)
@@ -317,10 +367,10 @@ dvr_autorec_add_series_link(const char *dvr_config_name,
 static void
 autorec_entry_destroy(dvr_autorec_entry_t *dae, int delconf)
 {
-  dvr_autorec_purge_spawns(dae, delconf);
+  dvr_autorec_purge_spawns(dae, delconf, 0);
 
   if (delconf)
-    hts_settings_remove("dvr/autorec/%s", idnode_uuid_as_str(&dae->dae_id));
+    hts_settings_remove("dvr/autorec/%s", idnode_uuid_as_sstr(&dae->dae_id));
 
   htsp_autorec_entry_delete(dae);
 
@@ -368,7 +418,7 @@ dvr_autorec_save(dvr_autorec_entry_t *dae)
   lock_assert(&global_lock);
 
   idnode_save(&dae->dae_id, m);
-  hts_settings_save(m, "dvr/autorec/%s", idnode_uuid_as_str(&dae->dae_id));
+  hts_settings_save(m, "dvr/autorec/%s", idnode_uuid_as_sstr(&dae->dae_id));
   htsmsg_destroy(m);
 }
 
@@ -444,7 +494,7 @@ dvr_autorec_entry_class_channel_get(void *o)
   static const char *ret;
   dvr_autorec_entry_t *dae = (dvr_autorec_entry_t *)o;
   if (dae->dae_channel)
-    ret = idnode_uuid_as_str(&dae->dae_channel->ch_id);
+    ret = idnode_uuid_as_sstr(&dae->dae_channel->ch_id);
   else
     ret = "";
   return &ret;
@@ -505,7 +555,7 @@ dvr_autorec_entry_class_tag_get(void *o)
   static const char *ret;
   dvr_autorec_entry_t *dae = (dvr_autorec_entry_t *)o;
   if (dae->dae_channel_tag)
-    ret = idnode_uuid_as_str(&dae->dae_channel_tag->ct_id);
+    ret = idnode_uuid_as_sstr(&dae->dae_channel_tag->ct_id);
   else
     ret = "";
   return &ret;
@@ -565,7 +615,7 @@ dvr_autorec_entry_class_time_get(void *o, int tm)
   if (tm >= 0)
     snprintf(buf, sizeof(buf), "%02d:%02d", tm / 60, tm % 60);
   else
-    strcpy(buf, "Any");
+    strncpy(buf, N_("Any"), 16);
   ret = buf;
   return &ret;
 }
@@ -652,7 +702,7 @@ dvr_autorec_entry_class_config_name_get(void *o)
   static const char *ret;
   dvr_autorec_entry_t *dae = (dvr_autorec_entry_t *)o;
   if (dae->dae_config)
-    ret = idnode_uuid_as_str(&dae->dae_config->dvr_id);
+    ret = idnode_uuid_as_sstr(&dae->dae_config->dvr_id);
   else
     ret = "";
   return &ret;
@@ -1042,10 +1092,32 @@ const idclass_t dvr_autorec_entry_class = {
       .list     = dvr_autorec_entry_class_dedup_list,
     },
     {
-      .type     = PT_INT,
+      .type     = PT_U32,
       .id       = "retention",
-      .name     = N_("Retention"),
+      .name     = N_("DVR Log Retention (days)"),
       .off      = offsetof(dvr_autorec_entry_t, dae_retention),
+      .opts     = PO_HIDDEN,
+    },
+    {
+      .type     = PT_U32,
+      .id       = "removal",
+      .name     = N_("File removal (days)"),
+      .off      = offsetof(dvr_autorec_entry_t, dae_removal),
+      .opts     = PO_HIDDEN,
+    },
+    {
+      .type     = PT_U32,
+      .id       = "maxcount",
+      .name     = N_("Maximum count (0=unlimited)"),
+      .off      = offsetof(dvr_autorec_entry_t, dae_max_count),
+      .opts     = PO_HIDDEN,
+    },
+    {
+      .type     = PT_U32,
+      .id       = "maxsched",
+      .name     = N_("Maximum schedules limit (0=unlimited)"),
+      .off      = offsetof(dvr_autorec_entry_t, dae_max_sched_count),
+      .opts     = PO_HIDDEN,
     },
     {
       .type     = PT_STR,
@@ -1114,7 +1186,6 @@ dvr_autorec_init(void)
   htsmsg_field_t *f;
 
   TAILQ_INIT(&autorec_entries);
-  dvr_autorec_in_init = 1;
   if((l = hts_settings_load("dvr/autorec")) != NULL) {
     HTSMSG_FOREACH(f, l) {
       if((c = htsmsg_get_map_by_field(f)) == NULL)
@@ -1123,7 +1194,6 @@ dvr_autorec_init(void)
     }
     htsmsg_destroy(l);
   }
-  dvr_autorec_in_init = 0;
 }
 
 void
@@ -1154,9 +1224,11 @@ dvr_autorec_check_event(epg_broadcast_t *e)
 {
   dvr_autorec_entry_t *dae;
 
+  if (e->channel && !e->channel->ch_enabled)
+    return;
   TAILQ_FOREACH(dae, &autorec_entries, dae_link)
     if(autorec_cmp(dae, e))
-      dvr_entry_create_by_autorec(e, dae);
+      dvr_entry_create_by_autorec(1, e, dae);
   // Note: no longer updating event here as it will be done from EPG
   //       anyway
 }
@@ -1186,18 +1258,27 @@ void
 dvr_autorec_changed(dvr_autorec_entry_t *dae, int purge)
 {
   channel_t *ch;
-  epg_broadcast_t *e;
+  epg_broadcast_t *e, **disabled = NULL, **p;
+  int enabled;
 
   if (purge)
-    dvr_autorec_purge_spawns(dae, 1);
+    disabled = dvr_autorec_purge_spawns(dae, 1, 1);
 
   CHANNEL_FOREACH(ch) {
     if (!ch->ch_enabled) continue;
     RB_FOREACH(e, &ch->ch_epg_schedule, sched_link) {
-      if(autorec_cmp(dae, e))
-        dvr_entry_create_by_autorec(e, dae);
+      if(autorec_cmp(dae, e)) {
+        enabled = 1;
+        if (disabled) {
+          for (p = disabled; *p && *p != e; p++);
+          enabled = *p == NULL;
+        }
+        dvr_entry_create_by_autorec(enabled, e, dae);
+      }
     }
   }
+
+  free(disabled);
 
   htsp_autorec_entry_update(dae);
 }
@@ -1308,10 +1389,21 @@ dvr_autorec_get_extra_time_post( dvr_autorec_entry_t *dae )
 /**
  *
  */
-int
-dvr_autorec_get_retention( dvr_autorec_entry_t *dae )
+uint32_t
+dvr_autorec_get_retention_days( dvr_autorec_entry_t *dae )
 {
   if (dae->dae_retention > 0)
     return dae->dae_retention;
-  return dae->dae_config->dvr_retention_days;
+  return dvr_retention_cleanup(dae->dae_config->dvr_retention_days);
+}
+
+/**
+ *
+ */
+uint32_t
+dvr_autorec_get_removal_days( dvr_autorec_entry_t *dae )
+{
+  if (dae->dae_removal > 0)
+    return dae->dae_removal;
+  return dvr_retention_cleanup(dae->dae_config->dvr_removal_days);
 }

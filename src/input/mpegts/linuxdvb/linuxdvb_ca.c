@@ -745,7 +745,7 @@ linuxdvb_ca_monitor ( void *aux )
     {
       lca->lca_en50221_thread_running = 1;
       tvhthread_create(&lca->lca_en50221_thread, NULL,
-                       linuxdvb_ca_en50221_thread, lca);
+                       linuxdvb_ca_en50221_thread, lca, "lnxdvb-ca");
     } else if (lca->lca_en50221_thread_running &&
                (state != CA_SLOT_STATE_MODULE_READY))
     {
@@ -904,7 +904,7 @@ void linuxdvb_ca_save( linuxdvb_ca_t *lca, htsmsg_t *msg )
   char id[8];
   htsmsg_t *m = htsmsg_create_map();
 
-  htsmsg_add_str(m, "uuid", idnode_uuid_as_str(&lca->lca_id));
+  htsmsg_add_str(m, "uuid", idnode_uuid_as_sstr(&lca->lca_id));
   idnode_save(&lca->lca_id, m);
 
   /* Add to list */

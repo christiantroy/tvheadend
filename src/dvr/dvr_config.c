@@ -105,11 +105,12 @@ dvr_config_find_by_list(htsmsg_t *uuids, const char *name)
   dvr_config_t *cfg, *res = NULL;
   htsmsg_field_t *f;
   const char *uuid, *uuid2;
+  char ubuf[UUID_HEX_SIZE];
 
   cfg = dvr_config_find_by_uuid(name);
   if (!cfg)
     cfg  = dvr_config_find_by_name(name);
-  uuid = cfg ? idnode_uuid_as_str(&cfg->dvr_id) : "";
+  uuid = cfg ? idnode_uuid_as_str(&cfg->dvr_id, ubuf) : "";
   if (uuids) {
     HTSMSG_FOREACH(f, uuids) {
       uuid2 = htsmsg_field_get_str(f) ?: "";
@@ -122,7 +123,7 @@ dvr_config_find_by_list(htsmsg_t *uuids, const char *name)
       }
     }
   } else {
-    if (cfg->dvr_enabled)
+    if (cfg && cfg->dvr_enabled)
       res = cfg;
   }
   if (!res)
@@ -176,6 +177,7 @@ dvr_config_create(const char *name, const char *uuid, htsmsg_t *conf)
   cfg->dvr_enabled = 1;
   cfg->dvr_config_name = strdup(name);
   cfg->dvr_retention_days = 31;
+  cfg->dvr_clone = 1;
   cfg->dvr_tag_files = 1;
   cfg->dvr_skip_commercials = 1;
   dvr_charset_update(cfg, intlconv_filesystem_charset());
@@ -229,7 +231,7 @@ dvr_config_destroy(dvr_config_t *cfg, int delconf)
 {
   if (delconf) {
     tvhinfo("dvr", "Deleting configuration '%s'", cfg->dvr_config_name);
-    hts_settings_remove("dvr/config/%s", idnode_uuid_as_str(&cfg->dvr_id));
+    hts_settings_remove("dvr/config/%s", idnode_uuid_as_sstr(&cfg->dvr_id));
   }
   LIST_REMOVE(cfg, config_link);
   idnode_unlink(&cfg->dvr_id);
@@ -514,8 +516,10 @@ dvr_config_save(dvr_config_t *cfg)
   lock_assert(&global_lock);
 
   dvr_config_storage_check(cfg);
+  if (cfg->dvr_removal_days > cfg->dvr_retention_days)
+    cfg->dvr_removal_days = cfg->dvr_retention_days;
   idnode_save(&cfg->dvr_id, m);
-  hts_settings_save(m, "dvr/config/%s", idnode_uuid_as_str(&cfg->dvr_id));
+  hts_settings_save(m, "dvr/config/%s", idnode_uuid_as_sstr(&cfg->dvr_id));
   htsmsg_destroy(m);
 }
 
@@ -559,7 +563,7 @@ dvr_config_class_perm(idnode_t *self, access_t *a, htsmsg_t *msg_to_write)
   if (!access_verify2(a, ACCESS_ADMIN))
     return 0;
   if (a->aa_dvrcfgs) {
-    my_uuid = idnode_uuid_as_str(&cfg->dvr_id);
+    my_uuid = idnode_uuid_as_sstr(&cfg->dvr_id);
     HTSMSG_FOREACH(f, a->aa_dvrcfgs) {
       uuid = htsmsg_field_get_str(f) ?: "";
       if (!strcmp(uuid, my_uuid))
@@ -639,7 +643,7 @@ dvr_config_class_profile_get(void *o)
   static const char *ret;
   dvr_config_t *cfg = (dvr_config_t *)o;
   if (cfg->dvr_profile)
-    ret = idnode_uuid_as_str(&cfg->dvr_profile->pro_id);
+    ret = idnode_uuid_as_sstr(&cfg->dvr_profile->pro_id);
   else
     ret = "";
   return &ret;
@@ -660,7 +664,7 @@ dvr_config_class_get_title (idnode_t *self, const char *lang)
   dvr_config_t *cfg = (dvr_config_t *)self;
   if (!dvr_config_is_default(cfg))
     return cfg->dvr_config_name;
-  return "(Default Profile)";
+  return N_("(Default Profile)");
 }
 
 static int
@@ -732,7 +736,7 @@ const idclass_t dvr_config_class = {
   .ic_perm       = dvr_config_class_perm,
   .ic_groups     = (const property_group_t[]) {
       {
-         .name   = N_("DVR Behaviour"),
+         .name   = N_("DVR Behavior"),
          .number = 1,
       },
       {
@@ -813,6 +817,28 @@ const idclass_t dvr_config_class = {
       .name     = N_("DVR Log Retention Time (days)"),
       .off      = offsetof(dvr_config_t, dvr_retention_days),
       .def.u32  = 31,
+      .group    = 1,
+    },
+    {
+      .type     = PT_U32,
+      .id       = "removal-days",
+      .name     = N_("DVR File Removal Time (days)"),
+      .off      = offsetof(dvr_config_t, dvr_removal_days),
+      .group    = 1,
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "clone",
+      .name     = N_("Clone Scheduled Entry On Error"),
+      .off      = offsetof(dvr_config_t, dvr_clone),
+      .def.u32  = 1,
+      .group    = 1,
+    },
+    {
+      .type     = PT_U32,
+      .id       = "rerecord-errors",
+      .name     = N_("Schedule a re-recording if more errors than (0=off)"),
+      .off      = offsetof(dvr_config_t, dvr_rerecord_errors),
       .group    = 1,
     },
     {

@@ -254,7 +254,7 @@ tvhdhomerun_frontend_monitor_cb( void *aux )
       /* start input thread */
       tvh_pipe(O_NONBLOCK, &hfe->hf_input_thread_pipe);
       pthread_mutex_lock(&hfe->hf_input_thread_mutex);
-      tvhthread_create(&hfe->hf_input_thread, NULL, tvhdhomerun_frontend_input_thread, hfe);
+      tvhthread_create(&hfe->hf_input_thread, NULL, tvhdhomerun_frontend_input_thread, hfe, "hdhm-front");
       pthread_cond_wait(&hfe->hf_input_thread_cond, &hfe->hf_input_thread_mutex);
       pthread_mutex_unlock(&hfe->hf_input_thread_mutex);
 
@@ -537,7 +537,7 @@ tvhdhomerun_frontend_save ( tvhdhomerun_frontend_t *hfe, htsmsg_t *fe )
   /* Save frontend */
   mpegts_input_save((mpegts_input_t*)hfe, m);
   htsmsg_add_str(m, "type", dvb_type2str(hfe->hf_type));
-  htsmsg_add_str(m, "uuid", idnode_uuid_as_str(&hfe->ti_id));
+  htsmsg_add_str(m, "uuid", idnode_uuid_as_sstr(&hfe->ti_id));
 
   /* Add to list */
   snprintf(id, sizeof(id), "%s #%d", dvb_type2str(hfe->hf_type), hfe->hf_tunerNumber);
@@ -680,6 +680,7 @@ tvhdhomerun_frontend_create(tvhdhomerun_device_t *hd, struct hdhomerun_discover_
   hfe->mi_stop_mux       = tvhdhomerun_frontend_stop_mux;
   hfe->mi_network_list   = tvhdhomerun_frontend_network_list;
   hfe->mi_update_pids    = tvhdhomerun_frontend_update_pids;
+  hfe->mi_empty_status   = mpegts_input_empty_status;
 
   /* Adapter link */
   hfe->hf_device = hd;

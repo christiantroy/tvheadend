@@ -272,7 +272,7 @@ page_simple(http_connection_t *hc,
     rstatus = val2str(de->de_sched_state, recstatustxt);
 
 
-    htsbuf_qprintf(hq, "<a href=\"/pvrinfo/%s\">", idnode_uuid_as_str(&de->de_id));
+    htsbuf_qprintf(hq, "<a href=\"/pvrinfo/%s\">", idnode_uuid_as_sstr(&de->de_id));
     
     htsbuf_qprintf(hq, 
 		"%02d:%02d-%02d:%02d&nbsp; %s",
@@ -317,11 +317,11 @@ page_einfo(http_connection_t *hc, const char *remain, void *opaque)
   de = dvr_entry_find_by_event(e);
 
   if((http_arg_get(&hc->hc_req_args, "rec")) != NULL) {
-    de = dvr_entry_create_by_event(NULL, e, 0, 0, hc->hc_username ?: NULL,
+    de = dvr_entry_create_by_event(1, NULL, e, 0, 0, hc->hc_username ?: NULL,
                                    hc->hc_representative ?: NULL, NULL,
-				   DVR_PRIO_NORMAL, 0, "simpleui");
+				   DVR_PRIO_NORMAL, 0, 0, "simpleui");
   } else if(de != NULL && (http_arg_get(&hc->hc_req_args, "cancel")) != NULL) {
-    de = dvr_entry_cancel(de);
+    de = dvr_entry_cancel(de, 0);
   }
 
   htsbuf_qprintf(hq, "<html>");
@@ -402,9 +402,9 @@ page_pvrinfo(http_connection_t *hc, const char *remain, void *opaque)
     return 404;
   }
   if((http_arg_get(&hc->hc_req_args, "clear")) != NULL) {
-    de = dvr_entry_cancel(de);
+    de = dvr_entry_cancel(de, 0);
   } else if((http_arg_get(&hc->hc_req_args, "cancel")) != NULL) {
-    de = dvr_entry_cancel(de);
+    de = dvr_entry_cancel(de, 0);
   }
 
   if(de == NULL) {
@@ -431,7 +431,7 @@ page_pvrinfo(http_connection_t *hc, const char *remain, void *opaque)
     htsbuf_qprintf(hq, "Recording status: %s<br>", rstatus);
 
   htsbuf_qprintf(hq, "<form method=\"post\" action=\"/pvrinfo/%s\">",
-	         idnode_uuid_as_str(&de->de_id));
+	         idnode_uuid_as_sstr(&de->de_id));
 
   switch(de->de_sched_state) {
   case DVR_SCHEDULED:

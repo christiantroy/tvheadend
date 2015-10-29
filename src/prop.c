@@ -25,6 +25,9 @@
 #include "tvh_locale.h"
 #include "lang_str.h"
 
+char prop_sbuf[PROP_SBUF_LEN];
+char *prop_sbuf_ptr = prop_sbuf;
+
 /* **************************************************************************
  * Utilities
  * *************************************************************************/
@@ -478,6 +481,10 @@ prop_serialize_value
     htsmsg_add_bool(m, "hexa", 1);
   if (opts & PO_DATE)
     htsmsg_add_bool(m, "date", 1);
+  if (opts & PO_LORDER)
+    htsmsg_add_bool(m, "lorder", 1);
+  if (opts & PO_MULTILINE)
+    htsmsg_add_bool(m, "multiline", 1);
 
   /* Enum list */
   if (pl->list)

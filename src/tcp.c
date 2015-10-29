@@ -30,6 +30,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
+#include <netinet/ip.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -41,9 +42,31 @@
 #include "access.h"
 #include "dvr/dvr.h"
 
+#if ENABLE_LIBSYSTEMD_DAEMON
+#include <systemd/sd-daemon.h>
+#endif
+
 int tcp_preferred_address_family = AF_INET;
 int tcp_server_running;
 th_pipe_t tcp_server_pipe;
+
+/**
+ *
+ */
+int
+socket_set_dscp(int sockfd, uint32_t dscp, char *errbuf, size_t errbufsize)
+{
+  int r, v;
+
+  v = dscp & IPTOS_DSCP_MASK;
+  r = setsockopt(sockfd, IPPROTO_IP, IP_TOS, &v, sizeof(v));
+  if (r < 0) {
+    if (errbuf && errbufsize)
+      snprintf(errbuf, errbufsize, "IP_TOS failed: %s", strerror(errno));
+    return -1;
+  }
+  return 0;
+}
 
 /**
  *
@@ -53,12 +76,14 @@ tcp_connect(const char *hostname, int port, const char *bindaddr,
             char *errbuf, size_t errbufsize, int timeout)
 {
   int fd, r, res, err;
-  struct addrinfo *ai;
+  struct addrinfo *ai, hints;
   char portstr[6];
   socklen_t errlen = sizeof(err);
 
   snprintf(portstr, 6, "%u", port);
-  res = getaddrinfo(hostname, portstr, NULL, &ai);
+  memset(&hints, 0, sizeof(struct addrinfo));
+  hints.ai_family = AF_UNSPEC;
+  res = getaddrinfo(hostname, portstr, &hints, &ai);
   
   if (res != 0) {
     snprintf(errbuf, errbufsize, "%s", gai_strerror(res));
@@ -66,7 +91,7 @@ tcp_connect(const char *hostname, int port, const char *bindaddr,
   }
 
   fd = tvh_socket(ai->ai_family, SOCK_STREAM, 0);
-  if(fd == -1) {
+  if(fd < 0) {
     snprintf(errbuf, errbufsize, "Unable to create socket: %s",
 	     strerror(errno));
     freeaddrinfo(ai);
@@ -89,6 +114,7 @@ tcp_connect(const char *hostname, int port, const char *bindaddr,
                                      ai->ai_family == AF_INET6 ? "6" : "4",
                                      bindaddr);
         freeaddrinfo(ai);
+        close(fd);
         return -1;
       }
     }
@@ -101,7 +127,7 @@ tcp_connect(const char *hostname, int port, const char *bindaddr,
   r = connect(fd, ai->ai_addr, ai->ai_addrlen);
   freeaddrinfo(ai);
 
-  if(r == -1) {
+  if(r < 0) {
     /* timeout < 0 - do not wait at all */
     if(errno == EINPROGRESS && timeout < 0) {
       err = 0;
@@ -347,6 +373,24 @@ tcp_read_timeout(int fd, void *buf, size_t len, int timeout)
 
   return 0;
 
+}
+
+/**
+ *
+ */
+int
+tcp_socket_dead(int fd)
+{
+  int err = 0;
+  socklen_t errlen = sizeof(err);
+
+  if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen))
+    return -errno;
+  if (err)
+    return -err;
+  if (recv(fd, NULL, 0, MSG_PEEK | MSG_DONTWAIT) == 0)
+    return -EIO;
+  return 0;
 }
 
 /**
@@ -681,19 +725,27 @@ next:
       pthread_mutex_lock(&global_lock);
       LIST_INSERT_HEAD(&tcp_server_active, tsl, alink);
       pthread_mutex_unlock(&global_lock);
-      tvhthread_create(&tsl->tid, NULL, tcp_server_start, tsl);
+      tvhthread_create(&tsl->tid, NULL, tcp_server_start, tsl, "tcp-start");
     }
   }
   tvhtrace("tcp", "server thread finished");
   return NULL;
 }
 
+
+
 /**
  *
  */
+#if ENABLE_LIBSYSTEMD_DAEMON
+static void *
+tcp_server_create_new
+  (const char *bindaddr, int port, tcp_server_ops_t *ops, void *opaque)
+#else
 void *
 tcp_server_create
   (const char *bindaddr, int port, tcp_server_ops_t *ops, void *opaque)
+#endif
 {
   int fd, x;
   tcp_server_t *ts;
@@ -766,11 +818,77 @@ tcp_server_create
   return ts;
 }
 
+#if ENABLE_LIBSYSTEMD_DAEMON
+/**
+ *
+ */
+void *
+tcp_server_create
+  (const char *bindaddr, int port, tcp_server_ops_t *ops, void *opaque)
+{
+  int sd_fds_num, i, fd;
+  struct sockaddr_storage bound;
+  tcp_server_t *ts;
+  struct in_addr addr4;
+  struct in6_addr addr6;
+  int found = 0;
+
+  sd_fds_num = sd_listen_fds(0);
+  inet_pton(AF_INET, bindaddr ?: "0.0.0.0", &addr4);
+  inet_pton(AF_INET6, bindaddr ?: "::", &addr6);
+
+  for (i = 0; i < sd_fds_num && !found; i++) {
+    struct sockaddr_in *s_addr4;
+    struct sockaddr_in6 *s_addr6;
+    socklen_t s_len;
+
+    /* Check which of the systemd-managed descriptors
+     * corresponds to the requested server (if any) */
+    fd = SD_LISTEN_FDS_START + i;
+    memset(&bound, 0, sizeof(bound));
+    s_len = sizeof(bound);
+    if (getsockname(fd, (struct sockaddr *) &bound, &s_len) != 0) {
+      tvhlog(LOG_ERR, "tcp", "getsockname failed: %s", strerror(errno));
+      continue;
+    }
+    switch (bound.ss_family) {
+      case AF_INET:
+        s_addr4 = (struct sockaddr_in *) &bound;
+        if (addr4.s_addr == s_addr4->sin_addr.s_addr
+            && htons(port) == s_addr4->sin_port)
+          found = 1;
+        break;
+      case AF_INET6:
+        s_addr6 = (struct sockaddr_in6 *) &bound;
+        if (memcmp(addr6.s6_addr, s_addr6->sin6_addr.s6_addr, 16) == 0
+            && htons(port) == s_addr6->sin6_port)
+          found = 1;
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (found) {
+    /* use the systemd provided socket */
+    ts = malloc(sizeof(tcp_server_t));
+    ts->serverfd = fd;
+    ts->bound  = bound;
+    ts->ops    = *ops;
+    ts->opaque = opaque;
+  } else {
+    /* no systemd-managed socket found, create a new one */
+    tvhlog(LOG_INFO, "tcp", "No systemd socket: creating a new one");
+    ts =  tcp_server_create_new(bindaddr, port, ops, opaque);
+  }
+
+  return ts;
+}
+#endif
 
 /**
  *
  */
-
 void tcp_server_register(void *server)
 {
   tcp_server_t *ts = server;
@@ -951,7 +1069,7 @@ tcp_server_init(void)
   tvhpoll_add(tcp_server_poll, &ev, 1);
 
   tcp_server_running = 1;
-  tvhthread_create(&tcp_server_tid, NULL, tcp_server_loop, NULL);
+  tvhthread_create(&tcp_server_tid, NULL, tcp_server_loop, NULL, "tcp-loop");
 }
 
 void

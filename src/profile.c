@@ -137,7 +137,7 @@ profile_delete(profile_t *pro, int delconf)
   if (pro->pro_conf_changed)
     pro->pro_conf_changed(pro);
   if (delconf)
-    hts_settings_remove("profile/%s", idnode_uuid_as_str(&pro->pro_id));
+    hts_settings_remove("profile/%s", idnode_uuid_as_sstr(&pro->pro_id));
   TAILQ_REMOVE(&profiles, pro, pro_link);
   idnode_unlink(&pro->pro_id);
   dvr_config_destroy_by_profile(pro, delconf);
@@ -155,7 +155,7 @@ profile_class_save ( idnode_t *in )
   idnode_save(in, c);
   if (pro->pro_shield)
     htsmsg_add_bool(c, "shield", 1);
-  hts_settings_save(c, "profile/%s", idnode_uuid_as_str(in));
+  hts_settings_save(c, "profile/%s", idnode_uuid_as_sstr(in));
   htsmsg_destroy(c);
   if (pro->pro_conf_changed)
     pro->pro_conf_changed(pro);
@@ -452,7 +452,7 @@ profile_find_by_list
   if (!profile_verify(pro, sflags))
     pro = NULL;
   if (uuids) {
-    uuid = pro ? idnode_uuid_as_str(&pro->pro_id) : "";
+    uuid = pro ? idnode_uuid_as_sstr(&pro->pro_id) : "";
     HTSMSG_FOREACH(f, uuids) {
       uuid2 = htsmsg_field_get_str(f) ?: "";
       if (strcmp(uuid, uuid2) == 0 && profile_verify(pro, sflags))
@@ -519,7 +519,7 @@ profile_get_htsp_list(htsmsg_t *array, htsmsg_t *filter)
   TAILQ_FOREACH(pro, &profiles, pro_link) {
     if (!pro->pro_work)
       continue;
-    uuid = idnode_uuid_as_str(&pro->pro_id);
+    uuid = idnode_uuid_as_sstr(&pro->pro_id);
     if (filter) {
       HTSMSG_FOREACH(f, filter) {
         if (!(s = htsmsg_field_get_str(f)))
@@ -998,7 +998,7 @@ const idclass_t profile_mpegts_pass_class =
 {
   .ic_super      = &profile_class,
   .ic_class      = "profile-mpegts",
-  .ic_caption    = N_("MPEG-TS Pass-through/built-in"),
+  .ic_caption    = N_("MPEG-TS Pass-thru/built-in"),
   .ic_properties = (const property_t[]){
     {
       .type     = PT_BOOL,
@@ -1510,7 +1510,7 @@ const idclass_t profile_transcode_class =
     {
       .type     = PT_U32,
       .id       = "resolution",
-      .name     = N_("Resolution"),
+      .name     = N_("Resolution (height)"),
       .off      = offsetof(profile_transcode_t, pro_resolution),
       .def.u32  = 384,
     },
@@ -1803,7 +1803,7 @@ profile_init(void)
     htsmsg_add_bool(conf, "enabled", 1);
     htsmsg_add_bool(conf, "default", 1);
     htsmsg_add_str (conf, "name", name);
-    htsmsg_add_str (conf, "comment", _("MPEG-TS Pass-through"));
+    htsmsg_add_str (conf, "comment", _("MPEG-TS Pass-thru"));
     htsmsg_add_s32 (conf, "priority", PROFILE_SPRIO_NORMAL);
     htsmsg_add_bool(conf, "rewrite_pmt", 1);
     htsmsg_add_bool(conf, "rewrite_pat", 1);

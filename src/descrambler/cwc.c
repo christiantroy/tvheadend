@@ -102,6 +102,8 @@ typedef struct ecm_section {
 
   int es_section;
   int es_channel;
+  uint16_t es_caid;
+  uint16_t es_provid;
 
   uint16_t es_seq;
   char es_nok;
@@ -654,7 +656,7 @@ handle_ecm_reply(cwc_service_t *ct, ecm_section_t *es, uint8_t *msg,
   cwc_t *cwc = ct->cs_cwc;
   ecm_pid_t *ep;
   ecm_section_t *es2;
-  char chaninfo[32];
+  char chaninfo[128];
   int i;
   int64_t delay = (getmonoclock() - es->es_time) / 1000LL; // in ms
 
@@ -794,6 +796,13 @@ forbid:
       descrambler_keys((th_descrambler_t *)ct, DESCRAMBLER_AES, msg + 3, msg + 3 + 16);
       pthread_mutex_lock(&cwc->cwc_mutex);
     }
+
+    snprintf(chaninfo, sizeof(chaninfo), "%s:%i", cwc->cwc_hostname, cwc->cwc_port);
+    descrambler_notify((th_descrambler_t *)ct,
+                       es->es_caid, es->es_provid,
+                       caid2name(es->es_caid),
+                       es->es_channel, delay,
+                       1, "", chaninfo, "newcamd");
   }
 }
 
@@ -1073,7 +1082,7 @@ cwc_session(cwc_t *cwc)
   pthread_cond_init(&cwc->cwc_writer_cond, NULL);
   pthread_mutex_init(&cwc->cwc_writer_mutex, NULL);
   TAILQ_INIT(&cwc->cwc_writeq);
-  tvhthread_create(&writer_thread_id, NULL, cwc_writer_thread, cwc);
+  tvhthread_create(&writer_thread_id, NULL, cwc_writer_thread, cwc, "cwc-writer");
 
   /**
    * Mainloop
@@ -1265,7 +1274,7 @@ cwc_table_input(void *opaque, int pid, const uint8_t *data, int len, int emm)
   struct cs_card_data *pcard = NULL;
   caid_t *c;
   uint16_t caid;
-  uint32_t providerid;
+  uint32_t provid;
 
   if (data == NULL)
     return;
@@ -1300,16 +1309,20 @@ cwc_table_input(void *opaque, int pid, const uint8_t *data, int len, int emm)
       // Validate prefered ECM PID
       tvhlog(LOG_DEBUG, "cwc", "ECM state INIT");
 
-      if(t->s_dvb_prefcapid != PREFCAPID_OFF) {
-        struct elementary_stream *prefca
-          = service_stream_find((service_t*)t, t->s_dvb_prefcapid);
-        if (!prefca || prefca->es_type != SCT_CA) {
-          tvhlog(LOG_DEBUG, "cwc", "Invalid prefered ECM (PID %d) found for service \"%s\"", t->s_dvb_prefcapid, t->s_dvb_svcname);
-          t->s_dvb_prefcapid = 0;
-        }
+      if(t->s_dvb_prefcapid_lock != PREFCAPID_OFF) {
+        st = service_stream_find((service_t*)t, t->s_dvb_prefcapid);
+        if (st && st->es_type == SCT_CA)
+          LIST_FOREACH(c, &st->es_caids, link)
+            LIST_FOREACH(pcard, &cwc->cwc_cards, cs_card)
+              if(pcard->cs_ra.caid == c->caid && verify_provider(pcard, c->providerid))
+                goto prefcapid_ok;
+        tvhlog(LOG_DEBUG, "cwc", "Invalid prefered ECM (PID %d) found for service \"%s\"", t->s_dvb_prefcapid, t->s_dvb_svcname);
+        t->s_dvb_prefcapid = 0;
       }
 
-      if(t->s_dvb_prefcapid == pid || t->s_dvb_prefcapid == 0) {
+prefcapid_ok:
+      if(t->s_dvb_prefcapid == pid || t->s_dvb_prefcapid == 0 ||
+         t->s_dvb_prefcapid_lock == PREFCAPID_OFF) {
         ep = calloc(1, sizeof(ecm_pid_t));
         ep->ep_pid = pid;
         LIST_INSERT_HEAD(&ct->cs_pids, ep, ep_link);
@@ -1317,9 +1330,9 @@ cwc_table_input(void *opaque, int pid, const uint8_t *data, int len, int emm)
                           t->s_dvb_prefcapid ? "preferred" : "new", pid, t->s_dvb_svcname);
       }
     }
+    if(ep == NULL)
+      goto end;
   }
-  if(ep == NULL)
-    goto end;
 
   st = service_stream_find((service_t *)t, pid);
   if (st) {
@@ -1333,7 +1346,7 @@ cwc_table_input(void *opaque, int pid, const uint8_t *data, int len, int emm)
 
 found:
   caid = c->caid;
-  providerid = c->providerid;
+  provid = c->providerid;
 
   switch(data[0]) {
     case 0x80:
@@ -1370,6 +1383,8 @@ found:
       if (es->es_keystate == ES_FORBIDDEN || es->es_keystate == ES_IDLE)
         break;
 
+      es->es_caid = caid;
+      es->es_provid = provid;
       es->es_channel = channel;
       es->es_pending = 1;
       es->es_resolved = 0;
@@ -1380,7 +1395,7 @@ found:
         goto end;
       }
 
-      es->es_seq = cwc_send_msg(cwc, data, len, sid, 1, caid, providerid);
+      es->es_seq = cwc_send_msg(cwc, data, len, sid, 1, caid, provid);
       
       tvhlog(LOG_DEBUG, "cwc",
              "Sending ECM%s section=%d/%d, for service \"%s\" (seqno: %d)",
@@ -1639,7 +1654,7 @@ cwc_conf_changed(caclient_t *cac)
     }
     if (!cwc->cwc_running) {
       cwc->cwc_running = 1;
-      tvhthread_create(&cwc->cwc_tid, NULL, cwc_thread, cwc);
+      tvhthread_create(&cwc->cwc_tid, NULL, cwc_thread, cwc, "cwc");
       return;
     }
     pthread_mutex_lock(&cwc->cwc_mutex);

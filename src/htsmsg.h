@@ -174,6 +174,11 @@ int  htsmsg_field_set_str(htsmsg_field_t *f, const char *str);
 htsmsg_t *htsmsg_add_msg(htsmsg_t *msg, const char *name, htsmsg_t *sub);
 
 /**
+ * Add/update an field where source is a list or map message.
+ */
+htsmsg_t *htsmsg_set_msg(htsmsg_t *msg, const char *name, htsmsg_t *sub);
+
+/**
  * Add an field where source is a double
  */
 void htsmsg_add_dbl(htsmsg_t *msg, const char *name, double dbl);
@@ -384,6 +389,11 @@ htsmsg_field_t *htsmsg_field_last(htsmsg_t *msg);
  */
 htsmsg_t *htsmsg_copy(htsmsg_t *src);
 
+/**
+ * Compare a message.
+ */
+int htsmsg_cmp(htsmsg_t *m1, htsmsg_t *m2);
+
 #define HTSMSG_FOREACH(f, msg) TAILQ_FOREACH(f, &(msg)->hm_fields, hmf_link)
 
 
@@ -396,4 +406,6 @@ htsmsg_t *htsmsg_get_map_by_field_if_name(htsmsg_field_t *f, const char *name);
 
 const char *htsmsg_get_cdata(htsmsg_t *m, const char *field);
 
-char *htsmsg_list_2_csv(htsmsg_t *m);
+char *htsmsg_list_2_csv(htsmsg_t *m, char delim, int human);
+
+htsmsg_t *htsmsg_csv_2_list(const char *str, char delim);

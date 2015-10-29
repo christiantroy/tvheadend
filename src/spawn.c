@@ -58,6 +58,7 @@ typedef struct spawn {
   LIST_ENTRY(spawn) link;
   pid_t pid;
   const char *name;
+  time_t killed;
 } spawn_t;
 
 static void spawn_reaper(void);
@@ -287,6 +288,7 @@ static void
 spawn_reaper(void)
 {
   int r;
+  spawn_t *s;
 
   do {
     r = spawn_reap(-1, NULL, 0);
@@ -295,13 +297,22 @@ spawn_reaper(void)
     if (r <= 0)
       break;
   } while (1);
+
+  /* forced kill for expired PIDs */
+  pthread_mutex_lock(&spawn_mutex);
+  LIST_FOREACH(s, &spawns, link)
+    if (s->killed && s->killed < dispatch_clock) {
+      /* kill the whole process group */
+      kill(-(s->pid), SIGKILL);
+    }
+  pthread_mutex_unlock(&spawn_mutex);
 }
 
 /**
  * Kill the pid (only if waiting)
  */
 int
-spawn_kill(pid_t pid, int sig)
+spawn_kill(pid_t pid, int sig, int timeout)
 {
   int r = -ESRCH;
   spawn_t *s;
@@ -314,6 +325,8 @@ spawn_kill(pid_t pid, int sig)
       if(s->pid == pid)
         break;
     if (s) {
+      if (!s->killed)
+        s->killed = dispatch_clock_update(NULL) + MINMAX(timeout, 5, 3600);
       /* kill the whole process group */
       r = kill(-pid, sig);
       if (r < 0)
@@ -357,14 +370,34 @@ spawn_parse_args(char ***argv, int argc, const char *cmd, const char **replace)
   *argv = calloc(argc, sizeof(char *));
 
   while (*s && i < argc - 1) {
+    while (*s == ' ')
+      s++;
     f = s;
     while (*s && *s != ' ') {
-      while (*s && *s != ' ' && *s != '\\')
-        s++;
       if (*s == '\\') {
-        memmove(s, s + 1, strlen(s));
-        if (*s)
-          s++;
+        l = *(s + 1);
+        if (l == 'b')
+          l = '\b';
+        else if (l == 'f')
+          l = '\f';
+        else if (l == 'n')
+          l = '\n';
+        else if (l == 'r')
+          l = '\r';
+        else if (l == 't')
+          l = '\t';
+        else
+          l = 0;
+        if (l) {
+          *s++ = l;
+          memmove(s, s + 1, strlen(s));
+        } else {
+          memmove(s, s + 1, strlen(s));
+          if (*s)
+            s++;
+        }
+      } else {
+        s++;
       }
     }
     if (f != s) {

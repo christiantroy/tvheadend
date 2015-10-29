@@ -25,27 +25,22 @@
 }
 
 
-.x-tab-strip li.x-tab-login {
+.x-tab-strip li.x-tab-extra-comp {
     margin-left: 16px;
 }
 
-.x-tab-strip span.x-tab-strip-login {
+.x-tab-strip span.x-tab-strip-extra-comp {
     vertical-align: middle;
+    cursor: default;
     white-space: nowrap;
-    padding:4px 0px;
+    padding: 4px 0;
 }
 
-.x-tab-strip span.x-tab-strip-login-cmd {
+.x-tab-strip span.x-tab-strip-extra-click-comp {
     vertical-align: middle;
-    cursor:pointer;
-    padding:4px 0;
+    cursor: pointer;
+    padding: 4px 0;
     float: right;
-}
-
-.x-tab-strip span.x-tab-diskspace {
-    vertical-align: middle;
-    white-space: nowrap;
-    padding:4px 0px;
 }
 
 .x-tree-col {
@@ -103,6 +98,11 @@
     border: 1px dotted #a3bae9 !important;
     background: #DFE8F6;
     cursor: pointer;
+}
+
+.ux-filtered-column {
+  font-style: italic !important;
+  font-weight: bold !important;
 }
 
 .x-view-drag-insert-above {
@@ -244,6 +244,14 @@
     background-image: url(../icons/group.png) !important;
 }
 
+.acl {
+    background-image: url(../icons/acl.png) !important;
+}
+
+.ip_block {
+    background-image: url(../icons/ip_block.png) !important;
+}
+
 .hardware {
     background-image: url(../icons/pci.png) !important;
 }
@@ -266,6 +274,10 @@
 
 .control_stop {
     background-image: url(../icons/control_stop.png) !important;
+}
+
+.control_mute {
+    background-image: url(../icons/sound_mute.png) !important;
 }
 
 .control_volume {
@@ -320,12 +332,24 @@
     background-image: url(../icons/accept.png) !important;
 }
 
+.completedRerecord {
+    background-image: url(../icons/add.png) !important;
+}
+
+.completedWarning {
+    background-image: url(../icons/bell.png) !important;
+}
+
 .completedError {
     background-image: url(../icons/exclamation.png) !important;
 }
 
 .recording {
     background-image: url(../icons/rec.png) !important;
+}
+
+.rerecord {
+    background-image: url(../icons/arrow_branch.png) !important;
 }
 
 .bullet_add {
@@ -370,6 +394,14 @@
 
 .caclientDisconnected {
     background-image: url(../icons/exclamation.png) !important;
+}
+
+.epggrabmodNone {
+    background-image: url(../icons/stop.png) !important;
+}
+
+.epggrabmodEnabled {
+    background-image: url(../icons/accept.png) !important;
 }
 
 .tvCards {
@@ -520,6 +552,10 @@
     background-image: url(../icons/satipsrvconf.png) !important;
 }
 
+.fetch_images {
+    background-image: url(../icons/fetch_images.png) !important;
+}
+
 .x-linked {
     display: inline-block;
     background-image: url(../icons/linked.gif) !important;
@@ -546,8 +582,9 @@
 
 .x-nice-time {
     display: inline-block;
-    width: 4em;
+    width: 6em;
     text-align: right;
+    white-space: nowrap;
 }
 
 .x-epg-title {

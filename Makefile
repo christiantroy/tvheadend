@@ -22,7 +22,7 @@
 
 include $(dir $(lastword $(MAKEFILE_LIST))).config.mk
 PROG    := $(BUILDDIR)/tvheadend
-LANGUAGES ?= bg cs de en en_GB es fa fr he hr hu it lv nl pl pt ru sv
+LANGUAGES ?= bg cs de en_US en_GB es fa fr he hr hu it lv nl pl pt ru sv
 
 #
 # Common compiler flags
@@ -77,12 +77,35 @@ LDFLAGS += ${LDFLAGS_FFDIR}/libavutil.a
 LDFLAGS += ${LDFLAGS_FFDIR}/libvorbisenc.a
 LDFLAGS += ${LDFLAGS_FFDIR}/libvorbis.a
 LDFLAGS += ${LDFLAGS_FFDIR}/libogg.a
-ifeq ($(CONFIG_LIBFFMPEG_STATIC_X264),yes)
-LDFLAGS += ${LDFLAGS_FFDIR}/libx264.a
+ifeq ($(CONFIG_LIBX264_STATIC),yes)
+LDFLAGS += ${LDFLAGS_FFDIR}/libx264.a -ldl
 else
-LDFLAGS += -lx264
+LDFLAGS += -lx264 -ldl
+endif
+ifeq ($(CONFIG_LIBX265),yes)
+ifeq ($(CONFIG_LIBX265_STATIC),yes)
+LDFLAGS += ${LDFLAGS_FFDIR}/libx265.a -lstdc++
+else
+LDFLAGS += -lx265
+endif
 endif
 LDFLAGS += ${LDFLAGS_FFDIR}/libvpx.a
+CONFIG_LIBMFX_VA_LIBS =
+ifeq ($(CONFIG_LIBMFX),yes)
+CONFIG_LIBMFX_VA_LIBS += -lva
+ifeq ($(CONFIG_VA_DRM),yes)
+CONFIG_LIBMFX_VA_LIBS += -lva-drm
+endif
+ifeq ($(CONFIG_VA_X11),yes)
+CONFIG_LIBMFX_VA_LIBS += -lva-x11
+endif
+ifeq ($(CONFIG_LIBMFX_STATIC),yes)
+LDFLAGS += ${LDFLAGS_FFDIR}/libmfx.a -lstdc++
+else
+LDFLAGS += -lmfx
+endif
+LDFLAGS += ${CONFIG_LIBMFX_VA_LIBS}
+endif
 endif
 
 ifeq ($(CONFIG_HDHOMERUN_STATIC),yes)
@@ -173,6 +196,7 @@ SRCS-1 = \
 	src/input.c \
 	src/httpc.c \
 	src/rtsp.c \
+	src/download.c \
 	src/fsmonitor.c \
 	src/cron.c \
 	src/esfilter.c \
@@ -198,6 +222,7 @@ I18N-C += $(SRCS-SATIP-SERVER)
 
 SRCS-2 = \
 	src/api.c \
+	src/api/api_config.c \
 	src/api/api_status.c \
 	src/api/api_idnode.c \
 	src/api/api_input.c \
@@ -215,12 +240,14 @@ SRCS-2 = \
 	src/api/api_profile.c \
 	src/api/api_bouquet.c \
 	src/api/api_language.c \
-	src/api/api_satip.c
+	src/api/api_satip.c \
+	src/api/api_timeshift.c
 
 SRCS-2 += \
 	src/parsers/parsers.c \
 	src/parsers/bitstream.c \
 	src/parsers/parser_h264.c \
+	src/parsers/parser_hevc.c \
 	src/parsers/parser_latm.c \
 	src/parsers/parser_avc.c \
 	src/parsers/parser_teletext.c \
@@ -251,13 +278,13 @@ SRCS-2 += \
 	src/webui/statedump.c \
 	src/webui/html.c\
 	src/webui/webui_api.c\
+	src/webui/xmltv.c
 
 SRCS-2 += \
 	src/muxer.c \
 	src/muxer/muxer_pass.c \
-	src/muxer/muxer_tvh.c \
-	src/muxer/tvh/ebml.c \
-	src/muxer/tvh/mkmux.c \
+	src/muxer/ebml.c \
+	src/muxer/muxer_mkv.c
 
 SRCS += $(SRCS-2)
 I18N-C += $(SRCS-2)
@@ -301,6 +328,7 @@ I18N-C += $(SRCS-MPEGTS-DVB)
 SRCS-MPEGTS-EPG = \
 	src/epggrab/otamux.c\
 	src/epggrab/module/eit.c \
+	src/epggrab/module/psip.c \
 	src/epggrab/support/freesat_huffman.c \
 	src/epggrab/module/opentv.c
 SRCS-$(CONFIG_MPEGTS) += $(SRCS-MPEGTS-EPG)
@@ -344,7 +372,8 @@ SRCS-IPTV = \
         src/input/mpegts/iptv/iptv_udp.c \
         src/input/mpegts/iptv/iptv_rtsp.c \
         src/input/mpegts/iptv/iptv_rtcp.c \
-        src/input/mpegts/iptv/iptv_pipe.c
+        src/input/mpegts/iptv/iptv_pipe.c \
+	src/input/mpegts/iptv/iptv_auto.c
 SRCS-${CONFIG_IPTV} += $(SRCS-IPTV)
 I18N-C += $(SRCS-IPTV)
 
@@ -644,8 +673,7 @@ ${BUILDDIR}/libffmpeg_stamp: ${ROOTDIR}/libav_static/build/ffmpeg/lib/libavcodec
 	@touch $@
 
 ${ROOTDIR}/libav_static/build/ffmpeg/lib/libavcodec.a: Makefile.ffmpeg
-	CONFIG_LIBFFMPEG_STATIC_X264=$(CONFIG_LIBFFMPEG_STATIC_X264) \
-	  $(MAKE) -f Makefile.ffmpeg build
+	$(MAKE) -f Makefile.ffmpeg build
 
 # Static HDHOMERUN library
 

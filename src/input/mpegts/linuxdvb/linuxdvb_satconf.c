@@ -25,6 +25,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <math.h>
 #include <fcntl.h>
 #include <assert.h>
 #include <linux/dvb/dmx.h>
@@ -302,7 +303,7 @@ const idclass_t linuxdvb_satconf_class =
     {
       .type     = PT_INT,
       .id       = "site_altitude",
-      .name     = N_("Altitude (metres)"),
+      .name     = N_("Altitude (meters)"),
       .off      = offsetof(linuxdvb_satconf_t, ls_site_altitude),
       .opts     = PO_ADVANCED,
       .def.i    = 0
@@ -664,6 +665,7 @@ void
 linuxdvb_satconf_post_stop_mux
   ( linuxdvb_satconf_t *ls )
 {
+  ls->ls_mmi = NULL;
   gtimer_disarm(&ls->ls_diseqc_timer);
   if (ls->ls_frontend && ls->ls_lnb_poweroff) {
     linuxdvb_diseqc_set_volt(ls, -1);
@@ -710,8 +712,11 @@ linuxdvb_satconf_start ( linuxdvb_satconf_t *ls, int delay, int vol )
     }
     ls->ls_last_tone_off = 1;
   }
-  if (delay)
-    usleep(10000);
+  /* the linuxdvb_diseqc_set_volt() fcn already sleeps for 15ms */
+  if (delay > 15) {
+    tvhtrace("diseqc", "initial sleep %dms", delay);
+    usleep((delay-15)*1000);
+  }
   return 0;
 }
 
@@ -824,14 +829,38 @@ linuxdvb_satconf_ele_tune_cb ( void *o )
 }
 
 int
-linuxdvb_satconf_start_mux
+linuxdvb_satconf_lnb_freq
   ( linuxdvb_satconf_t *ls, mpegts_mux_instance_t *mmi )
 {
-  int r;
-  uint32_t f;
+  int f;
+  linuxdvb_satconf_ele_t *lse = linuxdvb_satconf_find_ele(ls, mmi->mmi_mux);
+  dvb_mux_t              *lm  = (dvb_mux_t*)mmi->mmi_mux;
+
+  if (!lse->lse_lnb)
+    return -1;
+
+  f = lse->lse_lnb->lnb_freq(lse->lse_lnb, lm);
+  if (f == (uint32_t)-1)
+    return -1;
+
+  /* calculate tuning frequency for en50494 */
+  if (lse->lse_en50494) {
+    f = lse->lse_en50494->ld_freq(lse->lse_en50494, lm, f);
+    if (f < 0) {
+      tvherror("en50494", "invalid tuning freq");
+      return -1;
+    }
+  }
+  return f;
+}
+
+int
+linuxdvb_satconf_start_mux
+  ( linuxdvb_satconf_t *ls, mpegts_mux_instance_t *mmi, int skip_diseqc )
+{
+  int r, f;
   linuxdvb_satconf_ele_t *lse = linuxdvb_satconf_find_ele(ls, mmi->mmi_mux);
   linuxdvb_frontend_t    *lfe = (linuxdvb_frontend_t*)ls->ls_frontend;
-  dvb_mux_t              *lm  = (dvb_mux_t*)mmi->mmi_mux;
 
   /* Not fully configured */
   if (!lse) return SM_CODE_TUNING_FAILED;
@@ -843,11 +872,17 @@ linuxdvb_satconf_start_mux
   //       the en50494 have to skip this test
   if (!lse->lse_lnb)
     return SM_CODE_TUNING_FAILED;
-  f = lse->lse_lnb->lnb_freq(lse->lse_lnb, lm);
-  if (f == (uint32_t)-1)
-    return SM_CODE_TUNING_FAILED;
 
-  if (ls->ls_early_tune && !lse->lse_en50494) {
+  if (skip_diseqc) {
+    f = linuxdvb_satconf_lnb_freq(ls, mmi);
+    if (f < 0)
+      return SM_CODE_TUNING_FAILED;
+    return linuxdvb_frontend_tune1(lfe, mmi, f);
+  }
+  if (ls->ls_early_tune) {
+    f = linuxdvb_satconf_lnb_freq(ls, mmi);
+    if (f < 0)
+      return SM_CODE_TUNING_FAILED;
     r = linuxdvb_frontend_tune0(lfe, mmi, f);
     if (r) return r;
   } else {
@@ -873,6 +908,47 @@ linuxdvb_satconf_reset
   ls->ls_last_vol = 0;
   ls->ls_last_toneburst = 0;
   ls->ls_last_tone_off = 0;
+}
+
+/*
+ * return 0 if passed mux cannot be used simultanously with given
+ * diseqc config
+ */
+int
+linuxdvb_satconf_match_mux
+  ( linuxdvb_satconf_t *ls, mpegts_mux_t *mm )
+{
+  mpegts_mux_instance_t *mmi = ls->ls_mmi;
+
+  if (mmi == NULL || mmi->mmi_mux == NULL)
+    return 1;
+
+  linuxdvb_satconf_ele_t *lse1 = linuxdvb_satconf_find_ele(ls, mm);
+  linuxdvb_satconf_ele_t *lse2 = linuxdvb_satconf_find_ele(ls, mmi->mmi_mux);
+  dvb_mux_t *lm1 = (dvb_mux_t*)mmi->mmi_mux;
+  dvb_mux_t *lm2 = (dvb_mux_t*)mm;
+
+#if ENABLE_TRACE
+  char buf1[256], buf2[256];
+  dvb_mux_conf_str(&lm1->lm_tuning, buf1, sizeof(buf1));
+  dvb_mux_conf_str(&lm2->lm_tuning, buf2, sizeof(buf2));
+  tvhtrace("diseqc", "match mux 1 - %s", buf1);
+  tvhtrace("diseqc", "match mux 2 - %s", buf2);
+#endif
+
+  if (lse1 != lse2) {
+    tvhtrace("diseqc", "match position failed");
+    return 0;
+  }
+  if (!lse1->lse_lnb->lnb_match(lse1->lse_lnb, lm1, lm2)) {
+    tvhtrace("diseqc", "match LNB failed");
+    return 0;
+  }
+  if (lse1->lse_en50494 && !lse1->lse_en50494->ld_match(lse1->lse_en50494, lm1, lm2)) {
+    tvhtrace("diseqc", "match en50494 failed");
+    return 0;
+  }
+  return 1;
 }
 
 /* **************************************************************************
@@ -967,7 +1043,7 @@ linuxdvb_satconf_save ( linuxdvb_satconf_t *ls, htsmsg_t *m )
   TAILQ_FOREACH(lse, &ls->ls_elements, lse_link){ 
     e = htsmsg_create_map();
     idnode_save(&lse->lse_id, e);
-    htsmsg_add_str(e, "uuid", idnode_uuid_as_str(&lse->lse_id));
+    htsmsg_add_str(e, "uuid", idnode_uuid_as_sstr(&lse->lse_id));
     if (lse->lse_lnb) {
       c = htsmsg_create_map();
       idnode_save(&lse->lse_lnb->ld_id, c);
@@ -1042,7 +1118,7 @@ linuxdvb_satconf_ele_class_network_set( void *o, const void *p )
     TAILQ_FOREACH(lse, &sc->ls_elements, lse_link) {
       for (i = 0; i < lse->lse_networks->is_count; i++)
         htsmsg_add_str(l, NULL,
-                       idnode_uuid_as_str(lse->lse_networks->is_array[i]));
+                       idnode_uuid_as_sstr(lse->lse_networks->is_array[i]));
     }
     mpegts_input_class_network_set(ls->lse_parent->ls_frontend, l);
     htsmsg_destroy(l);
@@ -1064,7 +1140,7 @@ linuxdvb_satconf_ele_class_network_rend( void *o, const char *lang )
 {
   linuxdvb_satconf_ele_t *ls  = o;
   htsmsg_t               *l   = idnode_set_as_htsmsg(ls->lse_networks);
-  char                   *str = htsmsg_list_2_csv(l);
+  char                   *str = htsmsg_list_2_csv(l, ',', 1);
   htsmsg_destroy(l);
   return str;
 }
@@ -1326,9 +1402,8 @@ void
 linuxdvb_satconf_delete ( linuxdvb_satconf_t *ls, int delconf )
 {
   linuxdvb_satconf_ele_t *lse, *nxt;
-  const char *uuid = idnode_uuid_as_str(&ls->ls_id);
   if (delconf)
-    hts_settings_remove("input/linuxdvb/satconfs/%s", uuid);
+    hts_settings_remove("input/linuxdvb/satconfs/%s", idnode_uuid_as_sstr(&ls->ls_id));
   gtimer_disarm(&ls->ls_diseqc_timer);
   for (lse = TAILQ_FIRST(&ls->ls_elements); lse != NULL; lse = nxt) {
     nxt = TAILQ_NEXT(lse, lse_link);

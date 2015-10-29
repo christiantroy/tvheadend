@@ -73,7 +73,7 @@ api_mapper_status_msg ( void )
   htsmsg_add_u32(m, "fail",   stat.fail);
   htsmsg_add_u32(m, "ignore", stat.ignore);
   if (stat.active)
-    htsmsg_add_str(m, "active", idnode_uuid_as_str(&stat.active->s_id));
+    htsmsg_add_str(m, "active", idnode_uuid_as_sstr(&stat.active->s_id));
   return m;
 }
 
@@ -90,7 +90,7 @@ api_mapper_status
 void
 api_service_mapper_notify ( void )
 {
-  notify_by_msg("servicemapper", api_mapper_status_msg());
+  notify_by_msg("servicemapper", api_mapper_status_msg(), 0);
 }
 
 static htsmsg_t *

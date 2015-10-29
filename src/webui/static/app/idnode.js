@@ -120,6 +120,50 @@ tvheadend.idnode_enum_store = function(f)
     return store;
 };
 
+tvheadend.idnode_enum_select_store = function(conf, st, to)
+{
+  var r = new Ext.data.JsonStore({
+      id: 'key',
+      fields: ['key', 'val'],
+      data: []
+  });
+
+  function changed_from(st) {
+      r.loadData([], false); /* remove all data */
+      if (conf.value) {
+          st.each(function(rec) {
+              if (conf.value.indexOf(rec.id) < 0) {
+                  var nrec = new r.recordType({key: rec.data.key, val: rec.data.val});
+                  nrec.id = rec.id;
+                  r.add(nrec);
+              }
+          });
+      }
+  }
+
+  function changed_to(st) {
+      r.loadData([], false); /* remove all data */
+      for (var i = 0; i < conf.value.length; i++) {
+          var rec = st.getById(conf.value[i]);
+          if (rec) {
+              var nrec = new r.recordType({key: rec.data.key, val: rec.data.val});
+              nrec.id = rec.id;
+              r.add(nrec);
+          }
+      }
+  }
+
+  if (to) {
+    st.on('load', changed_to);
+    changed_to(st);
+  } else {
+    st.on('load', changed_from);
+    changed_from(st);
+  }
+
+  return r;
+}
+
 tvheadend.idnode_filter_fields = function(d, list)
 {
     if (!list)
@@ -203,10 +247,16 @@ tvheadend.IdNodeField = function(conf)
     this.intsplit = conf.intsplit;
     this.hexa = conf.hexa;
     this.group = conf.group;
+    this.lorder = conf.lorder;
+    this.multiline = conf.multiline;
     this['enum'] = conf['enum'];
     this.store = null;
     if (this['enum'])
         this.store = tvheadend.idnode_enum_store(this);
+    if (this.lorder) {
+        this.fromstore = tvheadend.idnode_enum_select_store(this, this.store, false);
+        this.tostore = tvheadend.idnode_enum_select_store(this, this.store, true);
+    }
     this.ordered = false;
 
     /*
@@ -365,23 +415,39 @@ tvheadend.IdNodeField = function(conf)
         
         /* ComboBox */
         if (this['enum']) {
-            cons = Ext.form.ComboBox;
-            if (this.list) {
-                cons = Ext.ux.form.LovCombo;
-                c['checkField'] = 'checked_' + this.id;
-            }
 
-            /* Combo settings */
-            c['mode'] = 'local';
             c['valueField'] = 'key';
             c['displayField'] = 'val';
-            c['store'] = this.store;
-            c['typeAhead'] = true;
-            c['forceSelection'] = false;
-            c['triggerAction'] = 'all';
-            c['emptyText'] = _('Select {0} ...').replace('{0}', this.text);
-            
-            combo = true;
+
+            if (this.list && this.lorder) {
+
+                cons = Ext.ux.ItemSelector;
+                c['fromStore'] = this.fromstore;
+                c['toStore'] = this.tostore;
+                c['fromSortField'] = 'val';
+                c['dataFields'] = ['key', 'val'];
+                c['msHeight'] =  150;
+                c['imagePath'] = 'static/multiselect/resources',
+                c['toLegend'] = _('Selected');
+                c['fromLegend'] = _('Available');
+
+            } else {
+                cons = Ext.form.ComboBox;
+                if (this.list) {
+                    cons = Ext.ux.form.LovCombo;
+                    c['checkField'] = 'checked_' + this.id;
+                }
+
+                /* Combo settings */
+                c['mode'] = 'local';
+                c['store'] = this.store;
+                c['typeAhead'] = true;
+                c['forceSelection'] = false;
+                c['triggerAction'] = 'all';
+                c['emptyText'] = _('Select {0} ...').replace('{0}', this.text);
+                
+                combo = true;
+            }
 
             /* Single */
         } else {
@@ -507,8 +573,30 @@ tvheadend.idnode_editor_field = function(f, conf)
     if (value == null)
         value = f['default'];
 
+    /* Ordered list */
+    if (f['enum'] && f.lorder) {
+
+        var st = tvheadend.idnode_enum_store(f);
+        var fromst = tvheadend.idnode_enum_select_store(f, st, false);
+        var tost = tvheadend.idnode_enum_select_store(f, st, true);
+        return new Ext.ux.ItemSelector({
+            name: f.id,
+            fromStore: fromst,
+            toStore: tost,
+            fromSortField: 'val',
+            fieldLabel: f.caption,
+            dataFields: ['key', 'val'],
+            msWidth: 205,
+            msHeight: 150,
+            valueField: 'key',
+            displayField: 'val',
+            imagePath: 'static/multiselect/resources',
+            toLegend: _('Selected'),
+            fromLegend: _('Available')
+        });
+
     /* Enumerated (combobox) type */
-    if (f['enum']) {
+    } else if (f['enum']) {
         var cons = Ext.form.ComboBox;
         if (f.list)
             cons = Ext.ux.form.LovCombo;
@@ -654,7 +742,8 @@ tvheadend.idnode_editor_field = function(f, conf)
 
 
         default:
-            return new Ext.form.TextField({
+            cons = f.multiline ? Ext.form.TextArea : Ext.form.TextField;
+            return new cons({
                 fieldLabel: f.caption,
                 name: f.id,
                 value: value,
@@ -675,13 +764,40 @@ tvheadend.idnode_editor_form = function(d, meta, panel, conf)
     var rf = [];
     var df = [];
     var groups = null;
+    var width = 0;
 
     /* Fields */
     for (var i = 0; i < d.length; i++) {
         var p = d[i];
+        if (conf.uuids && p.rdonly)
+            continue;
         var f = tvheadend.idnode_editor_field(p, conf);
         if (!f)
             continue;
+        if (conf.uuids) {
+            var label = f.fieldLabel;
+            f.fieldLabel = null;
+            var w = 15 + 10 + conf.labelWidth + 10 +
+                    (f.initialConfig.width ? f.initialConfig.width : 100) + 10;
+            if (w > width)
+                width = w;
+            f = new Ext.form.CompositeField({
+                items: [
+                    new Ext.ux.form.XCheckbox({
+                        width: 15,
+                        height: 12,
+                        name: '_x_' + f.name
+                    }),
+                    {
+                        xtype: 'displayfield',
+                        width: conf.labelWidth,
+                        height: 12,
+                        value: label
+                    },
+                    f
+                ]
+            });
+        }
         if (p.group && meta.groups) {
             if (!groups)
                 groups = {};
@@ -779,6 +895,20 @@ tvheadend.idnode_editor_form = function(d, meta, panel, conf)
             panel.add(newFieldSet({ title: _("Read-only Info"), items: rf, collapsed: 'true'}));
     }
     panel.doLayout();
+    if (width)
+        panel.fixedWidth = width + 50;
+    if (conf.uuids) {
+        panel.getForm().getFieldValues = function(dirtyOnly) {
+            o = {};
+            this.items.each(function(f) {
+                var cbox = f.items.itemAt(0);
+                var field = f.items.itemAt(2);
+                if (cbox.getValue())
+                    o[field.getName()] = field.getValue();
+            });
+            return o;
+        }
+    }
 };
 
 /*
@@ -796,7 +926,7 @@ tvheadend.idnode_editor = function(item, conf)
             iconCls: 'save',
             handler: function() {
                 var node = panel.getForm().getFieldValues();
-                node.uuid = item.uuid;
+                node.uuid = conf.uuids ? conf.uuids : item.uuid;
                 tvheadend.Ajax({
                     url: 'api/idnode/save',
                     params: {
@@ -827,7 +957,7 @@ tvheadend.idnode_editor = function(item, conf)
         border: conf.inTabPanel ? false : true,
         bodyStyle: 'padding: 5px',
         labelAlign: 'left',
-        labelWidth: conf.labelWidth || 200,
+        labelWidth: conf.uuids ? 1 : (conf.labelWidth || 200),
         autoWidth: conf.noautoWidth ? false : true,
         autoHeight: !conf.fixedHeight,
         width: conf.nowidth ? null : (conf.width || 600),
@@ -837,9 +967,12 @@ tvheadend.idnode_editor = function(item, conf)
         buttons: buttons
     });
 
-    tvheadend.idnode_editor_form(item.props || item.params, item.meta, panel,
-                                 { showpwd: conf.showpwd });
-
+    var c = {
+        showpwd: conf.showpwd,
+        uuids: conf.uuids,
+        labelWidth: conf.labelWidth || 200
+    };
+    tvheadend.idnode_editor_form(item.props || item.params, item.meta, panel, c);
     return panel;
 };
 
@@ -1004,8 +1137,42 @@ tvheadend.idnode_grid = function(panel, conf)
     var idnode = null;
 
     var update = function(o) {
-        if (auto.getValue())
+        if ((o.create || 'delete' in o) && auto.getValue()) {
             store.reload();
+            return;
+        }
+        if ('delete' in o) {
+            Ext.each(o['delete'], function (d) {
+                var r = store.getById(d);
+                if (r)
+                    store.remove(r);
+            });
+        }
+        if (o.change) {
+            var ids = [];
+            Ext.each(o.change, function(id) {
+                var r = store.getById(id);
+                if (r)
+                    ids.push(r.id);
+            });
+            if (ids) {
+                var p = { uuid: Ext.encode(ids), grid: 1 };
+                if (conf.list) p.list = conf.list;
+                Ext.Ajax.request({
+                    url: 'api/idnode/load',
+                    params: p,
+                    success: function (d) {
+                        d = json_decode(d);
+                        Ext.each(d, function(jd) {
+                            tvheadend.replace_entry(store.getById(jd.uuid), jd);
+                        });
+                    },
+                    failure: function(response, options) {
+                        Ext.MessageBox.alert(_('Grid Update'), response.statusText);
+                    }
+                });
+            }
+        }
     };
 
     var update2 = function(o) {
@@ -1103,7 +1270,7 @@ tvheadend.idnode_grid = function(panel, conf)
                 abuttons.down.setDisabled(count === 0);
             }
             if (abuttons.edit)
-                abuttons.edit.setDisabled(count !== 1);
+                abuttons.edit.setDisabled(count === 0);
             if (conf.selected)
                 conf.selected(s, abuttons);
         });
@@ -1250,15 +1417,17 @@ tvheadend.idnode_grid = function(panel, conf)
         if (!conf.readonly) {
             if (buttons.length > 0)
                 buttons.push('-');
+        }
+        if (!conf.readonly || conf.edit) {
             abuttons.edit = new Ext.Toolbar.Button({
                 tooltip: _('Edit selected entry'),
                 iconCls: 'edit',
                 text: _('Edit'),
                 disabled: true,
                 handler: function() {
-                    var r = select.getSelected();
-                    if (r) {
-                        if (conf.edittree) {
+                    if (conf.edittree) {
+                        var r = select.getSelected();
+                        if (r) {
                             var p = tvheadend.idnode_tree({
                                 url: 'api/idnode/tree',
                                 params: {
@@ -1276,11 +1445,17 @@ tvheadend.idnode_grid = function(panel, conf)
                                 items: p
                             });
                             w.show();
-                        } else {
+                        }
+                    } else {
+                        var r = select.getSelections();
+                        if (r && r.length > 0) {
+                            var uuids = [];
+                            for (var i = 0; i < r.length; i++)
+                                uuids.push(r[i].id);
                             var params = {};
                             if (conf.edit && conf.edit.params)
-                              params = conf.edit.params;
-                            params['uuid'] = r.id;
+                                params = conf.edit.params;
+                            params['uuid'] = r[0].id;
                             params['meta'] = 1;
                             tvheadend.Ajax({
                                 url: 'api/idnode/load',
@@ -1289,16 +1464,26 @@ tvheadend.idnode_grid = function(panel, conf)
                                     d = json_decode(d);
                                     var w = null;
                                     var c = {win: w};
+                                    if (uuids.length > 1) {
+                                        var title = String.format(_('Edit {0} ({1} entries)'),
+                                                                  conf.titleS, uuids.length);
+                                        c.uuids = uuids;
+                                    } else {
+                                        var title = String.format(_('Edit {0}'), conf.titleS);
+                                    }
                                     var p = tvheadend.idnode_editor(d[0], c);
+                                    var width = p.fixedWidth;
                                     w = new Ext.Window({
-                                        title: String.format(_('Edit {0}'), conf.titleS),
+                                        title: title,
                                         iconCls: 'edit',
                                         layout: 'fit',
-                                        autoWidth: true,
+                                        autoWidth: width ? false : true,
                                         autoHeight: true,
                                         plain: true,
                                         items: p
                                     });
+                                    if (width)
+                                        w.setWidth(width);
                                     c.win = w;
                                     w.show();
                                 }
@@ -1892,7 +2077,7 @@ tvheadend.idnode_tree = function(panel, conf)
     }
 
     function updatenode(o) {
-        if (o.uuid) {
+        if ('change' in o || 'delete' in o) {
             tree.getRootNode().reload();
             tree.expandAll();
         }
@@ -2016,6 +2201,202 @@ tvheadend.idnode_tree = function(panel, conf)
             tvheadend.comet.un(conf.comet, update);
         dpanel.removeAll(true);
         tree = null;
+        if (conf.destroyer)
+            conf.destroyer(conf);
+    }
+
+    var dpanel = new Ext.Panel({
+        border: false,
+        header: false,
+        layout: 'fit',
+        title: conf.title || '',
+        iconCls: conf.iconCls || ''
+    });
+
+    tvheadend.paneladd(panel, dpanel, conf.tabIndex);
+    tvheadend.panelreg(panel, dpanel, builder, destroyer);
+};
+
+/*
+ * Simple Node Editor
+ */
+tvheadend.idnode_simple = function(panel, conf)
+{
+    var mpanel = null;
+    var update_cb = null;
+
+    function update() {
+        if (update_cb)
+            update_cb(1);
+    }
+
+    function builder() {
+        if (mpanel)
+            return;
+
+        if (conf.builder)
+            conf.builder(conf);
+
+        var buttons = [];
+        var abuttons = {};
+        var current = null;
+
+        /* Top bar */
+        abuttons.save = new Ext.Toolbar.Button({
+            tooltip: conf.saveTooltip || _('Save pending changes (marked with red border)'),
+            iconCls: 'save',
+            text: conf.saveText || _('Save'),
+            disabled: true,
+            handler: function() {
+                var node = current.getForm().getFieldValues();
+                tvheadend.Ajax({
+                    url: conf.url + '/save',
+                    params: {
+                        node: Ext.encode(node)
+                    },
+                    success: function() {
+                        form_load(true);
+                    }
+                });
+            }
+        });
+        buttons.push(abuttons.save);
+        abuttons.undo = new Ext.Toolbar.Button({
+            tooltip: _('Revert pending changes (marked with red border)'),
+            iconCls: 'undo',
+            text: _('Undo'),
+            disabled: true,
+            handler: function() {
+                if (current)
+                    current.getForm().reset();
+            }
+        });
+        buttons.push(abuttons.undo);
+
+        /* Extra buttons */
+        if (conf.tbar) {
+            buttons.push('-');
+            for (i = 0; i < conf.tbar.length; i++) {
+                var t = conf.tbar[i];
+                if (t.name && t.builder) {
+                    var b = t.builder();
+                    if (t.callback) {
+                        b.callback = t.callback;
+                        b.handler = function(b, e) {
+                            this.callback(this, e);
+                        }
+                    }
+                    abuttons[t.name] = b;
+                    buttons.push(b);
+                } else if (t.name)
+                    buttons.push(t.name);
+            }
+        }
+
+        /* Help */
+        if (conf.help) {
+            buttons.push('->');
+            buttons.push({
+                text: _('Help'),
+                iconCls: 'help',
+                handler: conf.help
+            });
+        }
+
+        function fonchange(f, o, n) {
+            if (current)
+                conf.onchange(current, f, o, n);
+        }
+
+        function form_build(d) {
+
+            var fpanel = new Ext.form.FormPanel({
+                frame: true,
+                border: true,
+                bodyStyle: 'padding: 5px',
+                labelAlign: 'left',
+                labelWidth: conf.labelWidth || 300,
+                autoWidth: false,
+                autoHeight: false,
+                width: conf.nowidth ? null : (conf.width || 730),
+                defaultType: 'textfield',
+                buttonAlign: 'left',
+                autoScroll: true
+            });
+
+            tvheadend.idnode_editor_form(d.props || d.params, d.meta,
+                                         fpanel, { showpwd: conf.showpwd });
+
+            if (conf.onchange) {
+                var f = fpanel.getForm().items;
+                for (var i = 0; i < f.items.length; i++) {
+                   var it = f.items[i];
+                   it.on('check', fonchange);
+                   it.on('change', fonchange);
+                }
+            }
+            return fpanel;
+
+        }
+
+        function form_destroy() {
+            if (current)
+                mpanel.remove(current);
+            current = null;
+        }
+
+        function form_load(force) {
+            if (!force && current)
+                return;
+            var params = conf.edit ? (conf.edit.params || {}) : {};
+            params.meta = 1;
+            tvheadend.Ajax({
+                url: conf.url + '/load',
+                params: params,
+                success: function(d) {
+                    d = json_decode(d);
+                    form_destroy();
+                    current = new form_build(d[0]);
+                    abuttons.save.setDisabled(false);
+                    abuttons.undo.setDisabled(false);
+                    if (abuttons.del)
+                      abuttons.del.setDisabled(false);
+                    mpanel.add(current);
+                    mpanel.doLayout();
+                }
+            });
+        }
+
+        var mpanel = new Ext.Panel({
+            tbar: buttons,
+            layout: 'hbox',
+            padding: 5,
+            border: false,
+            layoutConfig: {
+               align: 'stretch'
+            }
+        });
+        
+        dpanel.add(mpanel);
+        dpanel.doLayout(false, true);
+
+        if (conf.comet) {
+            update_cb = form_load;
+            tvheadend.comet.on(conf.comet, update);
+        }
+
+        form_load(true);
+    }
+
+    function destroyer() {
+        if (mpanel === null || !tvheadend.dynamic)
+            return;
+        if (conf.comet) {
+            update_cb = null;
+            tvheadend.comet.un(conf.comet, update);
+        }
+        dpanel.removeAll(true);
+        mpanel = null;
         if (conf.destroyer)
             conf.destroyer(conf);
     }

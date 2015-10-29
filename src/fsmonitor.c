@@ -110,7 +110,7 @@ fsmonitor_init ( void )
 #else
   fsmonitor_fd = inotify_init1(IN_CLOEXEC);
 #endif
-  tvhthread_create0(&fsmonitor_tid, NULL, fsmonitor_thread, NULL, "fsmonitor");
+  tvhthread_create(&fsmonitor_tid, NULL, fsmonitor_thread, NULL, "fsmonitor");
 }
 
 /*

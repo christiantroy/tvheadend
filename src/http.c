@@ -39,6 +39,11 @@
 #include "access.h"
 #include "notify.h"
 #include "channels.h"
+#include "config.h"
+
+#if ENABLE_ANDROID
+#include <sys/socket.h>
+#endif
 
 void *http_server;
 
@@ -232,13 +237,19 @@ http_send_header(http_connection_t *hc, int rc, const char *content,
   htsbuf_qprintf(&hdrs, "%s %d %s\r\n", 
 		 http_ver2str(hc->hc_version), rc, http_rc2str(rc));
 
-  if (hc->hc_version != RTSP_VERSION_1_0)
+  if (hc->hc_version != RTSP_VERSION_1_0){
     htsbuf_qprintf(&hdrs, "Server: HTS/tvheadend\r\n");
-
+    if (config.cors_origin && config.cors_origin[0]) {
+      htsbuf_qprintf(&hdrs, "Access-Control-Allow-Origin: %s\r\n", config.cors_origin);
+      htsbuf_qprintf(&hdrs, "Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n");
+      htsbuf_qprintf(&hdrs, "Access-Control-Allow-Headers: x-requested-with\r\n");
+    }
+  }
+  
   if(maxage == 0) {
     if (hc->hc_version != RTSP_VERSION_1_0)
       htsbuf_qprintf(&hdrs, "Cache-Control: no-cache\r\n");
-  } else {
+  } else if (maxage > 0) {
     time(&t);
 
     tm = gmtime_r(&t, &tm0);
@@ -283,6 +294,8 @@ http_send_header(http_connection_t *hc, int rc, const char *content,
 
   if(contentlen > 0)
     htsbuf_qprintf(&hdrs, "Content-Length: %"PRId64"\r\n", contentlen);
+  else if(contentlen == INT64_MIN)
+    htsbuf_qprintf(&hdrs, "Content-Length: 0\r\n");
 
   if(range) {
     htsbuf_qprintf(&hdrs, "Accept-Ranges: %s\r\n", "bytes");
@@ -459,10 +472,11 @@ http_redirect(http_connection_t *hc, const char *location,
     if (!external && tvheadend_webroot && location[0] == '/')
       htsbuf_append(&hq, tvheadend_webroot, strlen(tvheadend_webroot));
     htsbuf_append(&hq, location, strlen(location));
-    htsbuf_append(&hq, "?", 1);
     TAILQ_FOREACH(ra, req_args, link) {
       if (!first)
         htsbuf_append(&hq, "&", 1);
+      else
+        htsbuf_append(&hq, "?", 1);
       first = 0;
       htsbuf_append_and_escape_url(&hq, ra->key);
       htsbuf_append(&hq, "=", 1);
@@ -488,6 +502,25 @@ http_redirect(http_connection_t *hc, const char *location,
   http_send_reply(hc, HTTP_STATUS_FOUND, "text/html", NULL, loc, 0);
   if (loc != location)
     free((void *)loc);
+}
+
+/**
+ *
+ */
+char *
+http_get_hostpath(http_connection_t *hc)
+{
+  char buf[256];
+  const char *host, *proto;
+
+  host  = http_arg_get(&hc->hc_args, "Host") ?:
+          http_arg_get(&hc->hc_args, "X-Forwarded-Host");
+  proto = http_arg_get(&hc->hc_args, "X-Forwarded-Proto");
+
+  snprintf(buf, sizeof(buf), "%s://%s%s",
+           proto ?: "http", host, tvheadend_webroot ?: "");
+
+  return strdup(buf);
 }
 
 /**
@@ -613,6 +646,17 @@ dump_request(http_connection_t *hc)
  * HTTP GET
  */
 static int
+http_cmd_options(http_connection_t *hc)
+{
+  http_send_header(hc, HTTP_STATUS_OK, NULL, INT64_MIN,
+		   NULL, NULL, -1, 0, NULL, NULL);
+  return 0;
+}
+
+/**
+ * HTTP GET
+ */
+static int
 http_cmd_get(http_connection_t *hc)
 {
   http_path_t *hp;
@@ -629,7 +673,7 @@ http_cmd_get(http_connection_t *hc)
   }
 
   if(args != NULL)
-    http_parse_get_args(hc, args);
+    http_parse_args(&hc->hc_req_args, args);
 
   return http_exec(hc, hp, remain);
 }
@@ -683,7 +727,7 @@ http_cmd_post(http_connection_t *hc, htsbuf_queue_t *spill)
     }
 
     if(!strcmp(argv[0], "application/x-www-form-urlencoded"))
-      http_parse_get_args(hc, hc->hc_post_data);
+      http_parse_args(&hc->hc_req_args, hc->hc_post_data);
   }
 
   if (tvhtrace_enabled())
@@ -708,6 +752,8 @@ http_process_request(http_connection_t *hc, htsbuf_queue_t *spill)
   default:
     http_error(hc, HTTP_STATUS_BAD_REQUEST);
     return 0;
+  case HTTP_CMD_OPTIONS:
+    return http_cmd_options(hc);
   case HTTP_CMD_GET:
     return http_cmd_get(hc);
   case HTTP_CMD_HEAD:
@@ -812,18 +858,27 @@ process_request(http_connection_t *hc, htsbuf_queue_t *spill)
 
 
 /*
+ * Delete one argument
+ */
+void
+http_arg_remove(struct http_arg_list *list, struct http_arg *arg)
+{
+  TAILQ_REMOVE(list, arg, link);
+  free(arg->key);
+  free(arg->val);
+  free(arg);
+}
+
+
+/*
  * Delete all arguments associated with a connection
  */
 void
 http_arg_flush(struct http_arg_list *list)
 {
   http_arg_t *ra;
-  while((ra = TAILQ_FIRST(list)) != NULL) {
-    TAILQ_REMOVE(list, ra, link);
-    free(ra->key);
-    free(ra->val);
-    free(ra);
-  }
+  while((ra = TAILQ_FIRST(list)) != NULL)
+    http_arg_remove(list, ra);
 }
 
 
@@ -997,7 +1052,7 @@ http_deescape(char *s)
  * Parse arguments of a HTTP GET url, not perfect, but works for us
  */
 void
-http_parse_get_args(http_connection_t *hc, char *args)
+http_parse_args(http_arg_list_t *list, char *args)
 {
   char *k, *v;
 
@@ -1017,7 +1072,7 @@ http_parse_get_args(http_connection_t *hc, char *args)
     http_deescape(k);
     http_deescape(v);
     //    printf("%s = %s\n", k, v);
-    http_arg_set(&hc->hc_req_args, k, v);
+    http_arg_set(list, k, v);
   }
 }
 

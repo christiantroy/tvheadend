@@ -1,16 +1,31 @@
-
 tvheadend.dynamic = true;
 tvheadend.accessupdate = null;
 tvheadend.capabilities = null;
+tvheadend.admin = false;
+
+tvheadend.cookieProvider = new Ext.state.CookieProvider({
+  // 7 days from now
+  expires: new Date(new Date().getTime() + (1000 * 60 * 60 * 24 * 7))
+});
 
 /* State Provider */
-Ext.state.Manager.setProvider(new Ext.state.CookieProvider({
-    // 7 days from now
-    expires: new Date(new Date().getTime() + (1000 * 60 * 60 * 24 * 7))
-}));
+Ext.state.Manager.setProvider(tvheadend.cookieProvider);
 
 tvheadend.regexEscape = function(s) {
     return s.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
+tvheadend.fromCSV = function(s) {
+  var a = s.split(',');
+  var r = [];
+  for (var i in a) {
+    var v = a[i];
+    if (v[0] == '"' && v[v.length-1] == '"')
+      r.push(v.substring(1, v.length - 1));
+    else
+      r.push(v);
+  }
+  return r;
 }
 
 /**
@@ -163,10 +178,39 @@ tvheadend.doQueryAnyMatch = function(q, forceAll) {
 }
 
 /*
+ * Replace one entry
+ */
+
+tvheadend.replace_entry = function(r, d) {
+    if (!r) return;
+    var dst = r.data;
+    var src = d.params instanceof Array ? d.params : d;
+    var lookup = src instanceof Array;
+    r.store.fields.each(function (n) {
+        if (lookup) {
+            for (var i = 0; i < src.length; i++) {
+                if (src[i].id == n.name) {
+                    var v = src[i].value;
+                    break;
+                }
+            }
+        } else {
+            var v = src[n.name];
+        }
+        var x = v;
+        if (typeof v === 'undefined')
+            x = typeof n.defaultValue === 'undefined' ? '' : n.defaultValue;
+        dst[n.name] = n.convert(x, v);
+    });
+    r.json = src;
+    r.commit();
+}
+
+/*
  * General capabilities
  */
 Ext.Ajax.request({
-    url: 'capabilities',
+    url: 'api/config/capabilities',
     success: function(d)
     {
         if (d && d.responseText)
@@ -312,6 +356,15 @@ tvheadend.VideoPlayer = function(url) {
             selectProfile,
             '-',
             {
+                iconCls: 'control_mute',
+                tooltip: _('Toggle mute'),
+                handler: function() {
+                    var muted = videoPlayer.muteToggle();
+                    slider.setDisabled(muted);
+                    sliderLabel.setDisabled(muted);
+                }
+            },
+            {
                 iconCls: 'control_volume',
                 tooltip: _('Volume'),
                 disabled: true
@@ -350,12 +403,20 @@ function accessUpdate(o) {
     if (!tvheadend.capabilities)
         return;
 
+    tvheadend.admin = o.admin == true;
+
+    if ('info_area' in o)
+        tvheadend.rootTabPanel.setInfoArea(o.info_area);
     if ('username' in o)
-      tvheadend.rootTabPanel.setLogin(o.username);
+        tvheadend.rootTabPanel.setLogin(o.username);
     if ('address' in o)
-      tvheadend.rootTabPanel.setAddress(o.address);
+        tvheadend.rootTabPanel.setAddress(o.address);
     if ('freediskspace' in o && 'totaldiskspace' in o)
-      tvheadend.rootTabPanel.setDiskSpace(o.freediskspace, o.totaldiskspace);
+        tvheadend.rootTabPanel.setDiskSpace(o.freediskspace, o.totaldiskspace);
+
+    if ('cookie_expires' in o && o.cookie_expires > 0)
+        tvheadend.cookieProvider.expires =
+            new Date(new Date().getTime() + (1000 * 60 * 60 * 24 * o.cookie_expires));
 
     if (tvheadend.autorecButton)
         tvheadend.autorecButton.setDisabled(o.dvr != true);
@@ -384,15 +445,26 @@ function accessUpdate(o) {
             items: []
         });
 
-
         tvheadend.baseconf(general);
         tvheadend.imgcacheconf(general);
         tvheadend.satipsrvconf(general);
         
         cp.add(general);
 
-        tvheadend.acleditor(cp);
-        tvheadend.passwdeditor(cp);
+        /* Users */
+        var users = new Ext.TabPanel({
+            activeTab: 0,
+            autoScroll: true,
+            title: _('Users'),
+            iconCls: 'group',
+            items: []
+        });
+
+        tvheadend.acleditor(users);
+        tvheadend.passwdeditor(users);
+        tvheadend.ipblockeditor(users);
+        
+        cp.add(users);
 
         /* DVB inputs, networks, muxes, services */
         var dvbin = new Ext.TabPanel({
@@ -423,7 +495,9 @@ function accessUpdate(o) {
         tvheadend.channel_tab(chepg);
         tvheadend.cteditor(chepg);
         tvheadend.bouquet(chepg);
-        tvheadend.epggrab(chepg);
+        tvheadend.epggrab_map(chepg);
+        tvheadend.epggrab_base(chepg);
+        tvheadend.epggrab_mod(chepg);
 
         cp.add(chepg);
 
@@ -512,77 +586,88 @@ tvheadend.log = function(msg, style) {
 /**
  *
  */
+tvheadend.RootTabExtraComponent = Ext.extend(Ext.Component, {
+   
+    onRender1: function(tab, before) {
+        if (!this.componentTpl) {
+            var tt = new Ext.Template(
+                '<li class="x-tab-extra-comp" id="{id}">',
+                '<span class="x-tab-strip-extra-comp {iconCls} x-tab-strip-text">{text}</span></li>'
+            );
+            tt.disableFormats = true;
+            tt.compile();
+            tvheadend.RootTabExtraComponent.prototype.componentTpl = tt;
+        }
+        var p = tab.getTemplateArgs(this);
+        var el = this.componentTpl.insertBefore(before, p);
+        this.tabEl = Ext.get(el);
+    }
+
+});
+
+tvheadend.RootTabExtraClickComponent = Ext.extend(Ext.Component, {
+   
+    onRender1: function(tab, before, click_cb) {
+        if (!this.componentTpl) {
+            var tt = new Ext.Template(
+                '<li class="x-tab-extra-comp" id="{id}"><a href="#">',
+                '<span class="x-tab-strip-extra-click-comp {iconCls} x-tab-strip-text">{text}</span></a></li>'
+            );
+            tt.disableFormats = true;
+            tt.compile();
+            tvheadend.RootTabExtraClickComponent.prototype.componentTpl = tt;
+        }
+        var p = tab.getTemplateArgs(this);
+        var el = this.componentTpl.insertBefore(before, p);
+        this.tabEl = Ext.get(el);
+        this.tabEl.select('a').on('click', click_cb, tab, {preventDefault: true});
+    }
+
+});
+
 tvheadend.RootTabPanel = Ext.extend(Ext.TabPanel, {
 
-    onRender: function(ct, position) {
-        tvheadend.RootTabPanel.superclass.onRender.call(this, ct, position);
-
-        /* Create login components */
-        var before = this.strip.dom.childNodes[this.strip.dom.childNodes.length-1];
-
-        if (!this.loginTpl) {
-            var tt = new Ext.Template(
-                '<li class="x-tab-login" id="{id}">',
-                '<span class="x-tab-strip-login {iconCls} x-tab-strip-text">{text}</span></li>'
-            );
-            tt.disableFormats = true;
-            tt.compile();
-            tvheadend.RootTabPanel.prototype.loginTpl = tt;
-        }
-        var item = new Ext.Component();
-        var p = this.getTemplateArgs(item);
-        var before = this.strip.dom.childNodes[this.strip.dom.childNodes.length-1];
-        item.tabEl = this.loginTpl.insertBefore(before, p);
-        this.loginItem = item;
-
-        if (!this.loginCmdTpl) {
-            var tt = new Ext.Template(
-                '<li class="x-tab-login" id="{id}"><a href="#">',
-                '<span class="x-tab-strip-login-cmd x-tab-strip-text"></span></a></li>'
-            );
-            tt.disableFormats = true;
-            tt.compile();
-            tvheadend.RootTabPanel.prototype.loginCmdTpl = tt;
-        }
-        var item = new Ext.Component();
-        var p = this.getTemplateArgs(item);
-        var el = this.loginCmdTpl.insertBefore(before, p);
-        item.tabEl = Ext.get(el);
-        item.tabEl.select('a').on('click', this.onLoginCmdClicked, this, {preventDefault: true});
-        this.loginCmdItem = item;
-
-        if (!this.diskSpaceTpl) {
-            var tt = new Ext.Template(
-                '<li class="x-tab-login" id="{id}">',
-                '<span class="x-tab-diskspace x-tab-strip-text"></span></li>'
-            );
-            tt.disableFormats = true;
-            tt.compile();
-            tvheadend.RootTabPanel.prototype.diskSpaceTpl = tt;
-        }
-        var item = new Ext.Component();
-        var p = this.getTemplateArgs(item);
-        var el = this.diskSpaceTpl.insertBefore(before, p);
-        item.tabEl = Ext.get(el);
-        this.diskSpaceItem = item;
-
-        this.on('beforetabchange', function(tp, p) {
-            if (p == this.loginItem || p == this.loginCmdItem || p == this.diskSpaceItem)
-                return false;
-        });
-    },
+    extra: [],
+    info_area: [],
 
     getComponent: function(comp) {
-        if (comp === this.loginItem.id || comp == this.loginItem)
-            return this.loginItem;
-        if (comp === this.loginCmdItem.id || comp == this.loginCmdItem)
-            return this.loginCmdItem;
-        if (comp === this.diskSpaceItem.id || comp == this.diskSpaceItem)
-            return this.diskSpaceItem;
+        for (var k in this.extra) {
+            var comp2 = this.extra[k];
+            if (comp === comp2.id || comp == comp2)
+                return comp2;
+        }
         return tvheadend.RootTabPanel.superclass.getComponent.call(this, comp);
     },
 
+    setInfoArea: function(info_area) {
+        this.info_area = tvheadend.fromCSV(info_area);
+        this.on('beforetabchange', function(tp, p) {
+            for (var k in this.extra)
+                if (p == this.extra[k])
+                    return false;
+        });
+
+        var before = this.strip.dom.childNodes[this.strip.dom.childNodes.length-1];
+
+        /* Create extra components */
+        for (var itm in this.info_area) {
+            var nm = this.info_area[itm];
+            if (!(nm in this.extra)) {
+                this.extra[nm] = new tvheadend.RootTabExtraComponent();
+                this.extra[nm].onRender1(this, before);
+                if (nm == 'login') {
+                    this.extra.loginCmd = new tvheadend.RootTabExtraClickComponent();
+                    this.extra.loginCmd.onRender1(this, before, this.onLoginCmdClicked);
+                }
+            }
+        }
+        
+        if (this.extra.time)
+            window.setInterval(this.setTime, 1000);
+    },
+
     setLogin: function(login) {
+        if (!('login' in this.extra)) return;
         this.login = login;
         if (login) {
             text = _('Logged in as') + ' <b>' + login + '</b>';
@@ -591,18 +676,17 @@ tvheadend.RootTabPanel = Ext.extend(Ext.TabPanel, {
             text = _('No verified access');
             cmd = '(' + _('login') + ')';
         }
-        var el = this.loginItem.tabEl;
-        var fly = Ext.fly(this.loginItem.tabEl);
-        var t = fly.child('span.x-tab-strip-login', true);
-        Ext.fly(this.loginItem.tabEl).child('span.x-tab-strip-login', true).innerHTML = text;
-        Ext.fly(this.loginCmdItem.tabEl).child('span.x-tab-strip-login-cmd', true).innerHTML = cmd;
+        Ext.get(this.extra.login.tabEl).child('span.x-tab-strip-extra-comp', true).innerHTML = text;
+        Ext.get(this.extra.loginCmd.tabEl).child('span.x-tab-strip-extra-click-comp', true).innerHTML = cmd;
     },
 
     setAddress: function(addr) {
-        Ext.get(this.loginItem.tabEl).child('span.x-tab-strip-login', true).qtip = addr;
+        if ('login' in this.extra)
+            Ext.get(this.extra.login.tabEl).child('span.x-tab-strip-extra-comp', true).qtip = addr;
     },
 
     setDiskSpace: function(bfree, btotal) {
+        if (!('storage' in this.extra)) return;
         human = function(val) {
           if (val > 1000000000)
             val = parseInt(val / 1000000000) + _('GB');
@@ -612,10 +696,19 @@ tvheadend.RootTabPanel = Ext.extend(Ext.TabPanel, {
             val = parseInt(val / 1000) + _('KB');
           return val;
         };
-        text = _('Disc space') + ':&nbsp;<b>' + human(bfree) + '/' + human(btotal) + '</b>';
-        var el = Ext.get(this.diskSpaceItem.tabEl).child('span.x-tab-diskspace', true);
+        text = _('Storage space') + ':&nbsp;<b>' + human(bfree) + '/' + human(btotal) + '</b>';
+        var el = Ext.get(this.extra.storage.tabEl).child('span.x-tab-strip-extra-comp', true);
         el.innerHTML = text;
         el.qtip = _('Free') + ': ' + human(bfree) + ' ' + _('Total') + ': ' + human(btotal);
+    },
+
+    setTime: function(stime) {
+        var panel = tvheadend.rootTabPanel;
+        if (!('time' in panel.extra)) return;
+        var d = stime ? new Date(stime) : new Date();
+        var el = Ext.get(panel.extra.time.tabEl).child('span.x-tab-strip-extra-comp', true);
+        el.innerHTML = '<b>' + d.toLocaleTimeString() + '</b>';
+        el.qtip = d.toLocaleString();
     },
 
     onLoginCmdClicked: function(e) {

@@ -29,6 +29,7 @@ struct elementary_stream;
 struct tvhcsa;
 struct mpegts_table;
 struct mpegts_mux;
+struct th_descrambler_data;
 
 #define DESCRAMBLER_NONE 0
 #define DESCRAMBLER_DES  1
@@ -61,18 +62,23 @@ typedef struct th_descrambler {
 } th_descrambler_t;
 
 typedef struct th_descrambler_runtime {
+  struct service *dr_service;
   tvhcsa_t dr_csa;
+  uint32_t dr_skip:1;
+  uint32_t dr_quick_ecm:1;
   uint32_t dr_key:1;
   uint32_t dr_key_first:1;
   uint8_t  dr_key_index;
   uint8_t  dr_key_valid;
   uint8_t  dr_key_changed;
+  uint32_t dr_key_interval;
   time_t   dr_key_start;
   time_t   dr_key_timestamp[2];
-  time_t   dr_ecm_start;
-  time_t   dr_ecm_key_time;
+  time_t   dr_ecm_start[2];
+  time_t   dr_ecm_last_key_time;
   time_t   dr_last_err;
-  sbuf_t   dr_buf;
+  TAILQ_HEAD(, th_descrambler_data) dr_queue;
+  uint32_t dr_queue_total;
   tvhlog_limit_t dr_loglimit_key;
   uint8_t  dr_key_even[16];
   uint8_t  dr_key_odd[16];
@@ -96,6 +102,7 @@ typedef struct descrambler_section {
   descrambler_section_callback_t callback;
   void     *opaque;
   LIST_HEAD(, descrambler_ecmsec) ecmsecs;
+  uint8_t   quick_ecm_called;
 } descrambler_section_t;
 
 typedef struct descrambler_table {
@@ -148,6 +155,11 @@ void descrambler_caid_changed  ( struct service *t );
 int  descrambler_resolved      ( struct service *t, th_descrambler_t *ignore );
 void descrambler_keys          ( th_descrambler_t *t, int type,
                                  const uint8_t *even, const uint8_t *odd );
+void descrambler_notify        ( th_descrambler_t *t,
+                                 uint16_t caid, uint32_t provid,
+                                 const char *cardsystem, uint16_t pid, uint32_t ecmtime,
+                                 uint16_t hops, const char *reader, const char *from,
+                                 const char *protocol );
 int  descrambler_descramble    ( struct service *t,
                                  struct elementary_stream *st,
                                  const uint8_t *tsb, int len );

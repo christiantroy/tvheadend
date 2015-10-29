@@ -21,6 +21,9 @@
 #include "tvhpoll.h"
 #include "tcp.h"
 #include "settings.h"
+#include "htsstr.h"
+#include "channels.h"
+#include "bouquet.h"
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -80,6 +83,51 @@ iptv_handler_find ( const char *scheme )
 }
 
 /* **************************************************************************
+ * IPTV bouquet
+ * *************************************************************************/
+
+static bouquet_t *
+iptv_bouquet_get (iptv_network_t *in, int create)
+{
+  char buf[128];
+  snprintf(buf, sizeof(buf), "iptv-network://%s", idnode_uuid_as_sstr(&in->mn_id));
+  return bouquet_find_by_source(in->mn_network_name, buf, create);
+}
+
+static void
+iptv_bouquet_update(void *aux)
+{
+  iptv_network_t *in = aux;
+  mpegts_mux_t *mm;
+  mpegts_service_t *ms;
+  bouquet_t *bq = in->in_bouquet ? iptv_bouquet_get(in, 1) : NULL;
+  uint32_t seen = 0;
+  if (bq == NULL)
+    return;
+  bouquet_change_comment(bq, in->in_url, 1);
+  LIST_FOREACH(mm, &in->mn_muxes, mm_network_link)
+    LIST_FOREACH(ms, &mm->mm_services, s_dvb_mux_link) {
+      bouquet_add_service(bq, (service_t *)ms, ((iptv_mux_t *)mm)->mm_iptv_chnum, NULL);
+      seen++;
+    }
+  bouquet_completed(bq, seen);
+}
+
+void
+iptv_bouquet_trigger(iptv_network_t *in, int timeout)
+{
+  gtimer_arm(&in->in_bouquet_timer, iptv_bouquet_update, in, timeout);
+}
+
+void
+iptv_bouquet_trigger_by_uuid(const char *uuid)
+{
+  iptv_network_t *in = (iptv_network_t *)idnode_find(uuid, &iptv_network_class, NULL);
+  iptv_bouquet_trigger(in, 0);
+}
+
+
+/* **************************************************************************
  * IPTV input
  * *************************************************************************/
 
@@ -88,6 +136,7 @@ iptv_input_class_get_title ( idnode_t *self, const char *lang )
 {
   return tvh_gettext_lang(lang, N_("IPTV"));
 }
+
 extern const idclass_t mpegts_input_class;
 const idclass_t iptv_input_class = {
   .ic_super      = &mpegts_input_class,
@@ -198,13 +247,57 @@ iptv_input_warm_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi )
   return 0;
 }
 
+static const char *
+iptv_sub_url_encode(iptv_mux_t *im, const char *s, char *tmp, size_t tmplen)
+{
+  char *p;
+  if (im->mm_iptv_url && !strncmp(im->mm_iptv_url, "pipe://", 7))
+    return s;
+  p = url_encode(s);
+  strncpy(tmp, p, tmplen-1);
+  tmp[tmplen-1] = '\0';
+  free(p);
+  return tmp;
+}
+
+static const char *
+iptv_sub_mux_name(const char *id, const void *aux, char *tmp, size_t tmplen)
+{
+  const mpegts_mux_instance_t *mmi = aux;
+  iptv_mux_t *im = (iptv_mux_t*)mmi->mmi_mux;
+  return iptv_sub_url_encode(im, im->mm_iptv_muxname, tmp, tmplen);
+}
+
+static const char *
+iptv_sub_service_name(const char *id, const void *aux, char *tmp, size_t tmplen)
+{
+  const mpegts_mux_instance_t *mmi = aux;
+  iptv_mux_t *im = (iptv_mux_t*)mmi->mmi_mux;
+  return iptv_sub_url_encode(im, im->mm_iptv_svcname, tmp, tmplen);
+}
+
+static const char *
+iptv_sub_weight(const char *id, const void *aux, char *tmp, size_t tmplen)
+{
+  const mpegts_mux_instance_t *mmi = aux;
+  snprintf(tmp, tmplen, "%d", mmi->mmi_start_weight);
+  return tmp;
+}
+
+static htsstr_substitute_t iptv_input_subst[] = {
+  { .id = "m",  .getval = iptv_sub_mux_name },
+  { .id = "n",  .getval = iptv_sub_service_name },
+  { .id = "w",  .getval = iptv_sub_weight },
+  { .id = NULL, .getval = NULL }
+};
+
 static int
 iptv_input_start_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi )
 {
   int ret = SM_CODE_TUNING_FAILED;
   iptv_mux_t *im = (iptv_mux_t*)mmi->mmi_mux;
   iptv_handler_t *ih;
-  char buf[256];
+  char buf[256], rawbuf[512], *raw = im->mm_iptv_url, *s;
   const char *scheme;
   url_t url;
 
@@ -212,18 +305,24 @@ iptv_input_start_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi )
   if (im->mm_active)
     return 0;
 
+  /* Substitute things */
+  if (im->mm_iptv_substitute && raw) {
+    htsstr_substitute(raw, rawbuf, sizeof(rawbuf), '$', iptv_input_subst, mmi, buf, sizeof(buf));
+    raw = rawbuf;
+  }
+
   /* Parse URL */
   mpegts_mux_nice_name((mpegts_mux_t*)im, buf, sizeof(buf));
-  memset(&url, 0, sizeof(url));
+  urlinit(&url);
 
-  if (im->mm_iptv_url && !strncmp(im->mm_iptv_url, "pipe://", 7)) {
+  if (raw && !strncmp(raw, "pipe://", 7)) {
 
     scheme = "pipe";
 
   } else {
 
-    if (urlparse(im->mm_iptv_url ?: "", &url)) {
-      tvherror("iptv", "%s - invalid URL [%s]", buf, im->mm_iptv_url);
+    if (urlparse(raw ?: "", &url)) {
+      tvherror("iptv", "%s - invalid URL [%s]", buf, raw);
       return ret;
     }
     scheme = url.scheme;
@@ -239,9 +338,11 @@ iptv_input_start_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi )
 
   /* Start */
   pthread_mutex_lock(&iptv_lock);
+  s = im->mm_iptv_url_raw;
+  im->mm_iptv_url_raw = strdup(raw);
   im->mm_active = mmi; // Note: must set here else mux_started call
                        // will not realise we're ready to accept pid open calls
-  ret            = ih->start(im, im->mm_iptv_url, &url);
+  ret = ih->start(im, raw, &url);
   if (!ret)
     im->im_handler = ih;
   else
@@ -249,6 +350,7 @@ iptv_input_start_mux ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi )
   pthread_mutex_unlock(&iptv_lock);
 
   urlreset(&url);
+  free(s);
   return ret;
 }
 
@@ -409,8 +511,7 @@ void
 iptv_input_mux_started ( iptv_mux_t *im )
 {
   /* Allocate input buffer */
-  sbuf_init_fixed(&im->mm_iptv_buffer, IPTV_BUF_SIZE);
-  im->mm_iptv_rtp_seq = -1;
+  sbuf_reset_and_alloc(&im->mm_iptv_buffer, IPTV_BUF_SIZE);
 
   if (iptv_input_fd_started(im))
     return;
@@ -422,6 +523,38 @@ iptv_input_mux_started ( iptv_mux_t *im )
                        im->mm_iptv_atsc ? DVB_SYS_ATSC_ALL : DVB_SYS_DVBT);
 }
 
+static void
+iptv_network_delete ( mpegts_network_t *mn, int delconf )
+{
+  iptv_network_t *in = (iptv_network_t*)mn;
+  char *url = in->in_url;
+  char *sane_url = in->in_url_sane;
+  char *icon_url = in->in_icon_url;
+  char *icon_url_sane = in->in_icon_url_sane;
+
+  gtimer_disarm(&in->in_bouquet_timer);
+
+  if (in->mn_id.in_class == &iptv_auto_network_class)
+    iptv_auto_network_done(in);
+
+  /* Remove config */
+  if (delconf) {
+    hts_settings_remove("input/iptv/networks/%s",
+                        idnode_uuid_as_sstr(&in->mn_id));
+    bouquet_delete(iptv_bouquet_get(in, 0));
+  }
+
+  /* delete */
+  free(in->in_remove_args);
+  free(in->in_ctx_charset);
+  mpegts_network_delete(mn, delconf);
+
+  free(icon_url_sane);
+  free(icon_url);
+  free(sane_url);
+  free(url);
+}
+
 /* **************************************************************************
  * IPTV network
  * *************************************************************************/
@@ -429,14 +562,14 @@ iptv_input_mux_started ( iptv_mux_t *im )
 static void
 iptv_network_class_delete ( idnode_t *in )
 {
-  mpegts_network_t *mn = (mpegts_network_t*)in;
+  return iptv_network_delete((mpegts_network_t *)in, 1);
+}
 
-  /* Remove config */
-  hts_settings_remove("input/iptv/networks/%s",
-                      idnode_uuid_as_str(in));
-
-  /* delete */
-  mpegts_network_delete(mn, 1);
+static int
+iptv_network_class_icon_url_set( void *in, const void *v )
+{
+  iptv_network_t *mn = in;
+  return iptv_url_set(&mn->in_icon_url, &mn->in_icon_url_sane, v, 1, 0);
 }
 
 extern const idclass_t mpegts_network_class;
@@ -446,6 +579,22 @@ const idclass_t iptv_network_class = {
   .ic_caption    = N_("IPTV Network"),
   .ic_delete     = iptv_network_class_delete,
   .ic_properties = (const property_t[]){
+    {
+      .type     = PT_BOOL,
+      .id       = "scan_create",
+      .name     = N_("Scan After Create"),
+      .off      = offsetof(iptv_network_t, in_scan_create),
+      .def.i    = 1,
+      .opts     = PO_ADVANCED
+    },
+    {
+      .type     = PT_U16,
+      .id       = "service_sid",
+      .name     = N_("Service ID"),
+      .off      = offsetof(iptv_network_t, in_service_id),
+      .def.i    = 0,
+      .opts     = PO_ADVANCED
+    },
     {
       .type     = PT_INT,
       .id       = "priority",
@@ -483,6 +632,116 @@ const idclass_t iptv_network_class = {
       .off      = offsetof(iptv_network_t, in_max_timeout),
       .def.i    = 15,
     },
+    {
+      .type     = PT_STR,
+      .id       = "icon_url",
+      .name     = N_("Icon base URL"),
+      .off      = offsetof(iptv_network_t, in_icon_url),
+      .set      = iptv_network_class_icon_url_set,
+      .opts     = PO_MULTILINE
+    },
+    {
+      .id       = "autodiscovery",
+      .type     = PT_NONE,
+    },
+    {}
+  }
+};
+
+static int
+iptv_auto_network_class_url_set( void *in, const void *v )
+{
+  iptv_network_t *mn = in;
+  return iptv_url_set(&mn->in_url, &mn->in_url_sane, v, 1, 0);
+}
+
+static void
+iptv_auto_network_class_notify_url( void *in, const char *lang )
+{
+  iptv_auto_network_trigger(in);
+}
+
+static void
+iptv_auto_network_class_notify_bouquet( void *in, const char *lang )
+{
+  iptv_network_t *mn = in;
+  bouquet_t *bq;
+  if (mn->in_bouquet) {
+    iptv_bouquet_trigger(mn, 0);
+  } else {
+    if (mn->in_bouquet) {
+      bq = iptv_bouquet_get(mn, 0);
+      if (bq)
+        bouquet_delete(bq);
+    }
+  }
+}
+
+static htsmsg_t *
+iptv_auto_network_class_charset_list(void *o, const char *lang)
+{
+  htsmsg_t *m = htsmsg_create_map();
+  htsmsg_add_str(m, "type",  "api");
+  htsmsg_add_str(m, "uri",   "intlconv/charsets");
+  return m;
+}
+
+const idclass_t iptv_auto_network_class = {
+  .ic_super      = &iptv_network_class,
+  .ic_class      = "iptv_auto_network",
+  .ic_caption    = N_("IPTV Automatic Network"),
+  .ic_properties = (const property_t[]){
+    {
+      .type     = PT_STR,
+      .id       = "url",
+      .name     = N_("URL"),
+      .off      = offsetof(iptv_network_t, in_url),
+      .set      = iptv_auto_network_class_url_set,
+      .notify   = iptv_auto_network_class_notify_url,
+      .opts     = PO_MULTILINE
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "bouquet",
+      .name     = N_("Create bouquet"),
+      .off      = offsetof(iptv_network_t, in_bouquet),
+      .notify   = iptv_auto_network_class_notify_bouquet,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "ctx_charset",
+      .name     = N_("Content character set"),
+      .off      = offsetof(iptv_network_t, in_ctx_charset),
+      .list     = iptv_auto_network_class_charset_list,
+      .notify   = iptv_auto_network_class_notify_url,
+    },
+    {
+      .type     = PT_S64,
+      .intsplit = CHANNEL_SPLIT,
+      .id       = "channel_number",
+      .name     = N_("Channel numbers from"),
+      .off      = offsetof(iptv_network_t, in_channel_number),
+    },
+    {
+      .type     = PT_U32,
+      .id       = "refetch_period",
+      .name     = N_("Re-fetch period (mins)"),
+      .off      = offsetof(iptv_network_t, in_refetch_period),
+      .def.i    = 60,
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "ssl_peer_verify",
+      .name     = N_("SSL verify peer"),
+      .off      = offsetof(iptv_network_t, in_ssl_peer_verify),
+    },
+    {
+      .type     = PT_STR,
+      .id       = "remove_args",
+      .name     = N_("Remove HTTP arguments"),
+      .off      = offsetof(iptv_network_t, in_remove_args),
+      .def.s    = "ticket"
+    },
     {}
   }
 };
@@ -515,32 +774,36 @@ iptv_network_config_save ( mpegts_network_t *mn )
   htsmsg_t *c = htsmsg_create_map();
   idnode_save(&mn->mn_id, c);
   hts_settings_save(c, "input/iptv/networks/%s/config",
-                    idnode_uuid_as_str(&mn->mn_id));
+                    idnode_uuid_as_sstr(&mn->mn_id));
   htsmsg_destroy(c);
 }
 
 iptv_network_t *
 iptv_network_create0
-  ( const char *uuid, htsmsg_t *conf )
+  ( const char *uuid, htsmsg_t *conf, const idclass_t *idc )
 {
   iptv_network_t *in = calloc(1, sizeof(*in));
   htsmsg_t *c;
 
   /* Init Network */
-  in->in_priority       = 1;
+  in->in_scan_create        = 1;
+  in->in_priority           = 1;
   in->in_streaming_priority = 1;
-  if (!mpegts_network_create0((mpegts_network_t *)in,
-                              &iptv_network_class,
+  if (idc == &iptv_auto_network_class)
+    in->in_remove_args = strdup("ticket");
+  if (!mpegts_network_create0((mpegts_network_t *)in, idc,
                               uuid, NULL, conf)) {
     free(in);
     return NULL;
   }
+  in->mn_delete         = iptv_network_delete;
   in->mn_create_service = iptv_network_create_service;
   in->mn_mux_class      = iptv_network_mux_class;
   in->mn_mux_create2    = iptv_network_create_mux2;
   in->mn_config_save    = iptv_network_config_save;
  
   /* Defaults */
+  in->mn_autodiscovery  = 0;
   if (!conf) {
     in->mn_skipinitscan = 1;
   }
@@ -550,7 +813,7 @@ iptv_network_create0
 
   /* Load muxes */
   if ((c = hts_settings_load_r(1, "input/iptv/networks/%s/muxes",
-                                idnode_uuid_as_str(&in->mn_id)))) {
+                                idnode_uuid_as_sstr(&in->mn_id)))) {
     htsmsg_field_t *f;
     htsmsg_t *e;
     HTSMSG_FOREACH(f, c) {
@@ -560,6 +823,9 @@ iptv_network_create0
     }
     htsmsg_destroy(c);
   }
+
+  if (idc == &iptv_auto_network_class)
+    iptv_auto_network_init(in);
   
   return in;
 }
@@ -568,7 +834,7 @@ static mpegts_network_t *
 iptv_network_builder
   ( const idclass_t *idc, htsmsg_t *conf )
 {
-  return (mpegts_network_t*)iptv_network_create0(NULL, conf);
+  return (mpegts_network_t*)iptv_network_create0(NULL, conf, idc);
 }
 
 /* **************************************************************************
@@ -581,8 +847,10 @@ iptv_network_init ( void )
   htsmsg_t *c, *e;
   htsmsg_field_t *f;
 
-  /* Register builder */
+  /* Register builders */
   mpegts_network_register_builder(&iptv_network_class,
+                                  iptv_network_builder);
+  mpegts_network_register_builder(&iptv_auto_network_class,
                                   iptv_network_builder);
 
   /* Load settings */
@@ -592,7 +860,10 @@ iptv_network_init ( void )
   HTSMSG_FOREACH(f, c) {
     if (!(e = htsmsg_get_map_by_field(f)))  continue;
     if (!(e = htsmsg_get_map(e, "config"))) continue;
-    iptv_network_create0(f->hmf_name, e);
+    if (htsmsg_get_str(e, "url"))
+      iptv_network_create0(f->hmf_name, e, &iptv_auto_network_class);
+    else
+      iptv_network_create0(f->hmf_name, e, &iptv_network_class);
   }
   htsmsg_destroy(c);
 }
@@ -625,7 +896,7 @@ void iptv_init ( void )
   /* Setup TS thread */
   iptv_poll = tvhpoll_create(10);
   pthread_mutex_init(&iptv_lock, NULL);
-  tvhthread_create(&iptv_thread, NULL, iptv_input_thread, NULL);
+  tvhthread_create(&iptv_thread, NULL, iptv_input_thread, NULL, "iptv");
 }
 
 void iptv_done ( void )
@@ -634,7 +905,9 @@ void iptv_done ( void )
   pthread_join(iptv_thread, NULL);
   tvhpoll_destroy(iptv_poll);
   pthread_mutex_lock(&global_lock);
+  mpegts_network_unregister_builder(&iptv_auto_network_class);
   mpegts_network_unregister_builder(&iptv_network_class);
+  mpegts_network_class_delete(&iptv_auto_network_class, 0);
   mpegts_network_class_delete(&iptv_network_class, 0);
   mpegts_input_stop_all((mpegts_input_t*)iptv_input);
   mpegts_input_delete((mpegts_input_t *)iptv_input, 0);

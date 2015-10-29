@@ -116,16 +116,14 @@ subscription_link_service(th_subscription_t *s, service_t *t)
 /**
  * Called from service code
  */
-static void
+static int
 subscription_unlink_service0(th_subscription_t *s, int reason, int stop)
 {
   streaming_message_t *sm;
-  service_t *t = s->ths_service;
+  service_t *t = s->ths_service, *tr = s->ths_raw_service;
 
   /* Ignore - not actually linked */
-  if (!s->ths_current_instance) return;
-
-  tvhtrace("subscription", "%04X: unlinking sub %p from svc %p", shortid(s), s, t);
+  if (!s->ths_current_instance) goto stop;
 
   pthread_mutex_lock(&t->s_stream_mutex);
 
@@ -142,9 +140,19 @@ subscription_unlink_service0(th_subscription_t *s, int reason, int stop)
 
   LIST_REMOVE(s, ths_service_link);
   s->ths_service = NULL;
+  s->ths_raw_service = NULL;
 
-  if (stop && (s->ths_flags & SUBSCRIPTION_ONESHOT) != 0)
+  if (stop && (s->ths_flags & SUBSCRIPTION_ONESHOT) != 0) {
+    if (tr)
+      LIST_REMOVE(s, ths_mux_link);
     subscription_unsubscribe(s, 0);
+    service_remove_raw(tr);
+  }
+
+stop:
+  if(LIST_FIRST(&t->s_subscriptions) == NULL)
+    service_stop(t);
+  return 1;
 }
 
 void
@@ -329,11 +337,7 @@ subscription_reschedule(void)
 
       subscription_unlink_service0(s, SM_CODE_BAD_SOURCE, 0);
 
-      if(t && LIST_FIRST(&t->s_subscriptions) == NULL)
-        service_stop(t);
-
       si = s->ths_current_instance;
-
       assert(si != NULL);
       si->si_error = s->ths_testing_error;
       time(&si->si_error_time);
@@ -366,6 +370,8 @@ subscription_reschedule(void)
         s->ths_testing_error = 0;
         s->ths_current_instance = NULL;
         service_instance_list_clear(&s->ths_instances);
+        sm = streaming_msg_create_code(SMT_NOSTART_WARN, error);
+        streaming_target_deliver(s->ths_output, sm);
         continue;
       }
       /* No service available */
@@ -457,11 +463,11 @@ subscription_input_direct(void *opauqe, streaming_message_t *sm)
     th_pkt_t *pkt = sm->sm_data;
     s->ths_total_err += pkt->pkt_err;
     if (pkt->pkt_payload)
-      s->ths_bytes_in += pkt->pkt_payload->pb_size;
+      subscription_add_bytes_in(s, pkt->pkt_payload->pb_size);
   } else if(sm->sm_type == SMT_MPEGTS) {
     pktbuf_t *pb = sm->sm_data;
     s->ths_total_err += pb->pb_err;
-    s->ths_bytes_in += pb->pb_size;
+    subscription_add_bytes_in(s, pb->pb_size);
   }
 
   /* Pass to output */
@@ -552,11 +558,13 @@ subscription_unsubscribe(th_subscription_t *s, int quiet)
   service_t *t;
   char buf[512];
   size_t l = 0;
+  service_t *raw;
 
   if (s == NULL)
     return;
 
   t = s->ths_service;
+  raw = s->ths_raw_service;
 
   lock_assert(&global_lock);
 
@@ -568,7 +576,7 @@ subscription_unsubscribe(th_subscription_t *s, int quiet)
   LIST_SAFE_REMOVE(s, ths_remove_link);
 
 #if ENABLE_MPEGTS
-  if (s->ths_raw_service)
+  if (raw)
     LIST_REMOVE(s, ths_mux_link);
 #endif
 
@@ -594,8 +602,8 @@ subscription_unsubscribe(th_subscription_t *s, int quiet)
   }
 
 #if ENABLE_MPEGTS
-  if (s->ths_raw_service)
-    service_destroy(s->ths_raw_service, 0);
+  if (raw)
+    service_remove_raw(s->ths_raw_service);
 #endif
 
   streaming_msg_free(s->ths_start_message);
@@ -839,9 +847,11 @@ static gtimer_t subscription_status_timer;
  * Serialize info about subscription
  */
 htsmsg_t *
-subscription_create_msg(th_subscription_t *s)
+subscription_create_msg(th_subscription_t *s, const char *lang)
 {
   htsmsg_t *m = htsmsg_create_map();
+  descramble_info_t *di;
+  char buf[256];
 
   htsmsg_add_u32(m, "id", s->ths_id);
   htsmsg_add_u32(m, "start", s->ths_start);
@@ -850,24 +860,24 @@ subscription_create_msg(th_subscription_t *s)
   const char *state;
   switch(s->ths_state) {
   default:
-    state = "Idle";
+    state = N_("Idle");
     break;
 
   case SUBSCRIPTION_TESTING_SERVICE:
-    state = "Testing";
+    state = N_("Testing");
     break;
     
   case SUBSCRIPTION_GOT_SERVICE:
-    state = "Running";
+    state = N_("Running");
     break;
 
   case SUBSCRIPTION_BAD_SERVICE:
-    state = "Bad";
+    state = N_("Bad");
     break;
   }
 
 
-  htsmsg_add_str(m, "state", state);
+  htsmsg_add_str(m, "state", lang ? tvh_gettext_lang(lang, state) : state);
 
   if(s->ths_hostname != NULL)
     htsmsg_add_str(m, "hostname", s->ths_hostname);
@@ -883,11 +893,23 @@ subscription_create_msg(th_subscription_t *s)
   if(s->ths_channel != NULL)
     htsmsg_add_str(m, "channel", channel_get_name(s->ths_channel));
   
-  if(s->ths_service != NULL)
+  if(s->ths_service != NULL) {
     htsmsg_add_str(m, "service", s->ths_service->s_nicename ?: "");
 
-  else if(s->ths_dvrfile != NULL)
+    if ((di = s->ths_service->s_descramble_info) != NULL) {
+      snprintf(buf, sizeof(buf), "%04X:%06X(%ums)-%s%s%s",
+               di->caid, di->provid, di->ecmtime, di->from,
+               di->reader[0] ? "/" : "", di->reader);
+      htsmsg_add_str(m, "descramble", buf);
+    }
+
+  } else if(s->ths_dvrfile != NULL)
     htsmsg_add_str(m, "service", s->ths_dvrfile ?: "");
+
+  htsmsg_add_u32(m, "in", s->ths_bytes_in_avg);
+  htsmsg_add_u32(m, "out", s->ths_bytes_out_avg);
+  htsmsg_add_s64(m, "total_in", s->ths_total_bytes_in);
+  htsmsg_add_s64(m, "total_out", s->ths_total_bytes_out);
 
   return m;
 }
@@ -906,16 +928,20 @@ subscription_status_callback ( void *p )
              subscription_status_callback, NULL, 1);
 
   LIST_FOREACH(s, &subscriptions, ths_global_link) {
-    int errors  = s->ths_total_err;
-    int in      = atomic_exchange(&s->ths_bytes_in, 0);
-    int out     = atomic_exchange(&s->ths_bytes_out, 0);
-    htsmsg_t *m = subscription_create_msg(s);
-    htsmsg_delete_field(m, "errors");
-    htsmsg_add_u32(m, "errors", errors);
-    htsmsg_add_u32(m, "in", in);
-    htsmsg_add_u32(m, "out", out);
+    /* Store the difference between total bytes from the last round */
+    uint64_t in_prev = s->ths_total_bytes_in_prev;
+    uint64_t in_curr = atomic_add_u64(&s->ths_total_bytes_in, 0);
+    uint64_t out_prev = s->ths_total_bytes_out_prev;
+    uint64_t out_curr = atomic_add_u64(&s->ths_total_bytes_out, 0);
+
+    s->ths_bytes_in_avg = (int)(in_curr - in_prev);
+    s->ths_total_bytes_in_prev = s->ths_total_bytes_in;
+    s->ths_bytes_out_avg = (int)(out_curr - out_prev);
+    s->ths_total_bytes_out_prev = s->ths_total_bytes_out;
+
+    htsmsg_t *m = subscription_create_msg(s, NULL);
     htsmsg_add_u32(m, "updateEntry", 1);
-    notify_by_msg("subscriptions", m);
+    notify_by_msg("subscriptions", m, NOTIFY_REWRITE_SUBSCRIPTIONS);
     count++;
   }
   if (old_count != count) {
@@ -950,6 +976,22 @@ subscription_done(void)
 /* **************************************************************************
  * Subscription control
  * *************************************************************************/
+
+/**
+ * Update incoming byte count
+ */
+void subscription_add_bytes_in(th_subscription_t *s, size_t in)
+{
+  atomic_add_u64(&s->ths_total_bytes_in, in);
+}
+
+/**
+ * Update outgoing byte count
+ */
+void subscription_add_bytes_out(th_subscription_t *s, size_t out)
+{
+  atomic_add_u64(&s->ths_total_bytes_out, out);
+}
 
 /**
  * Change weight

@@ -24,7 +24,6 @@
 #include <libavutil/opt.h>
 #include <libavutil/audio_fifo.h>
 #include <libavutil/dict.h>
-#include <libavutil/audioconvert.h>
 
 #if LIBAVUTIL_VERSION_MICRO >= 100 /* FFMPEG */
 #define USING_FFMPEG 1
@@ -132,11 +131,11 @@ typedef struct transcoder {
 #define WORKING_ENCODER(x) \
   ((x) == AV_CODEC_ID_H264 || (x) == AV_CODEC_ID_MPEG2VIDEO || \
    (x) == AV_CODEC_ID_VP8  || /* (x) == AV_CODEC_ID_VP9 || */ \
-   (x) == AV_CODEC_ID_AAC  || \
+   (x) == AV_CODEC_ID_HEVC || (x) == AV_CODEC_ID_AAC || \
    (x) == AV_CODEC_ID_MP2  || (x) == AV_CODEC_ID_VORBIS)
 
 /**
- * 
+ *
  */
 static inline int
 shortid(transcoder_t *t)
@@ -182,6 +181,14 @@ transcode_opt_set_int(transcoder_t *t, transcoder_stream_t *ts,
     return -1;
   }
   return 0;
+}
+
+static void
+av_dict_set_int__(AVDictionary **opts, const char *key, int64_t val, int flags)
+{
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%"PRId64, val);
+  av_dict_set(opts, key, buf, flags);
 }
 
 /**
@@ -340,7 +347,7 @@ transcoder_get_decoder(transcoder_t *t, streaming_component_type_t ty)
 
 
 /**
- * 
+ *
  */
 static AVCodec *
 transcoder_get_encoder(transcoder_t *t, const char *codec_name)
@@ -816,13 +823,13 @@ scleanup:
     } else if (got_packet_ptr && packet.pts >= 0) {
 
       int extra_size = 0;
-      
+
       if (ts->ts_type == SCT_AAC) {
         /* only if ADTS header is missing, create it */
         if (packet.size < 2 || packet.data[0] != 0xff || (packet.data[1] & 0xf0) != 0xf0)
           extra_size = 7;
       }
-      
+
       n = pkt_alloc(NULL, packet.size + extra_size, packet.pts, packet.pts);
       memcpy(pktbuf_ptr(n->pkt_payload) + extra_size, packet.data, packet.size);
 
@@ -858,13 +865,6 @@ scleanup:
 /**
  * Parse MPEG2 header, simplifier version (we know what ffmpeg/libav generates
  */
-static inline uint32_t
-RB32(const uint8_t *d)
-{
-  return (d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3];
-}
-
-
 static void
 extract_mpeg2_global_data(th_pkt_t *n, uint8_t *data, int len)
 {
@@ -946,7 +946,8 @@ send_video_packet(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt,
   if (!octx->coded_frame)
     return;
 
-  if (ts->ts_type == SCT_H264 && octx->extradata_size &&
+  if ((ts->ts_type == SCT_H264 || ts->ts_type == SCT_HEVC) &&
+      octx->extradata_size &&
       (ts->ts_first || octx->coded_frame->pict_type == AV_PICTURE_TYPE_I)) {
     n = pkt_alloc(NULL, octx->extradata_size + epkt->size, epkt->pts, epkt->dts);
     memcpy(pktbuf_ptr(n->pkt_payload), octx->extradata, octx->extradata_size);
@@ -979,7 +980,7 @@ send_video_packet(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt,
   n->pkt_field          = pkt->pkt_field;
   n->pkt_aspect_num     = pkt->pkt_aspect_num;
   n->pkt_aspect_den     = pkt->pkt_aspect_den;
-  
+
   if(octx->coded_frame && octx->coded_frame->pts != AV_NOPTS_VALUE) {
     if(n->pkt_dts != PTS_UNSET)
       n->pkt_dts -= n->pkt_pts;
@@ -1037,6 +1038,7 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
   video_stream_t *vs = (video_stream_t*)ts;
   streaming_message_t *sm;
   th_pkt_t *pkt2;
+  static int max_bitrate = (INT_MAX / 3000) * 0.8;
 
   av_init_packet(&packet);
   av_init_packet(&packet2);
@@ -1135,7 +1137,7 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
         // valid values for quality are 2-31, smaller means better quality, use 5 as default
         octx->flags          |= CODEC_FLAG_QSCALE;
         octx->global_quality  = FF_QP2LAMBDA *
-            (t->t_props.tp_vbitrate == 0 ? 5 : MAX(2, MIN(31, t->t_props.tp_vbitrate)));
+            (t->t_props.tp_vbitrate == 0 ? 5 : MINMAX(t->t_props.tp_vbitrate, 2, 31));
       } else {
         // encode with specified bitrate and optimize for high compression
         octx->bit_rate        = t->t_props.tp_vbitrate * 1000;
@@ -1159,9 +1161,7 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
       if (t->t_props.tp_vbitrate < 64) {
         // encode with specified quality and optimize for low latency
         // valid values for quality are 1-63, smaller means better quality, use 15 as default
-        char valuestr[3];
-        snprintf(valuestr, sizeof (valuestr), "%d", t->t_props.tp_vbitrate == 0 ? 15 : t->t_props.tp_vbitrate);
-        av_dict_set(&opts,      "crf", valuestr, 0);
+        av_dict_set_int__(&opts,      "crf", t->t_props.tp_vbitrate == 0 ? 15 : t->t_props.tp_vbitrate, 0);
         // bitrate setting is still required, as it's used as max rate in CQ mode
         // and set to a very low value by default
         octx->bit_rate        = 25000000;
@@ -1188,9 +1188,7 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
       if (t->t_props.tp_vbitrate < 64) {
         // encode with specified quality and optimize for low latency
         // valid values for quality are 1-51, smaller means better quality, use 15 as default
-        char valuestr[3];
-        snprintf(valuestr, sizeof (valuestr), "%d", t->t_props.tp_vbitrate == 0 ? 15 : MIN(51, t->t_props.tp_vbitrate));
-        av_dict_set(&opts,      "crf", valuestr, 0);
+        av_dict_set_int__(&opts,      "crf", t->t_props.tp_vbitrate == 0 ? 15 : MIN(51, t->t_props.tp_vbitrate), 0);
         // tune "zerolatency" removes as much encoder latency as possible
         av_dict_set(&opts,      "tune", "zerolatency", 0);
       } else {
@@ -1202,6 +1200,48 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
         av_dict_set(&opts,      "x264opts", "force-cfr=1", 0);
         // use gop size of 5 seconds
         octx->gop_size       *= 5;
+      }
+
+      break;
+
+    case SCT_HEVC:
+      octx->pix_fmt        = PIX_FMT_YUV420P;
+      octx->flags         |= CODEC_FLAG_GLOBAL_HEADER;
+
+      // on all hardware ultrafast (or maybe superfast) should be safe
+      av_dict_set(&opts, "preset", "ultrafast",  0);
+      // disables encoder features which tend to be bottlenecks for the decoder/player
+      av_dict_set(&opts, "tune",   "fastdecode", 0);
+
+      if (t->t_props.tp_vbitrate < 64) {
+        // encode with specified quality
+        // valid values for crf are 1-51, smaller means better quality
+        // use 18 as default
+        av_dict_set_int__(&opts, "crf", t->t_props.tp_vbitrate == 0 ? 18 : MIN(51, t->t_props.tp_vbitrate), 0);
+
+        // the following is equivalent to tune=zerolatency for presets: ultra/superfast
+        av_dict_set(&opts, "x265_opts", "bframes=0",        0);
+        av_dict_set(&opts, "x265_opts", ":rc-lookahead=0",  AV_DICT_APPEND);
+        av_dict_set(&opts, "x265_opts", ":scenecut=0",      AV_DICT_APPEND);
+        av_dict_set(&opts, "x265_opts", ":frame-threads=1", AV_DICT_APPEND);
+      } else {
+        int bitrate, maxrate, bufsize;
+        bitrate = (t->t_props.tp_vbitrate > max_bitrate) ? max_bitrate : t->t_props.tp_vbitrate;
+        maxrate = ceil(bitrate * 1.25);
+        bufsize = maxrate * 3;
+
+        tvhdebug("transcode", "tuning HEVC encoder for ABR rate control, "
+                 "bitrate: %dkbps, vbv-bufsize: %dkbits, vbv-maxrate: %dkbps",
+                 bitrate, bufsize, maxrate);
+
+        // this is the same as setting --bitrate=bitrate
+        octx->bit_rate = bitrate * 1000;
+
+        av_dict_set(&opts,       "x265_opts", "vbv-bufsize=",  0);
+        av_dict_set_int__(&opts, "x265_opts", bufsize,         AV_DICT_APPEND);
+        av_dict_set(&opts,       "x265_opts", ":vbv-maxrate=",AV_DICT_APPEND);
+        av_dict_set_int__(&opts, "x265_opts", maxrate,         AV_DICT_APPEND);
+        av_dict_set(&opts,       "x265_opts", ":strict-cbr=1", AV_DICT_APPEND);
       }
 
       break;
@@ -1222,9 +1262,9 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
   deint = av_malloc(len);
 
   avpicture_fill(&deint_pic,
-		 deint, 
-		 ictx->pix_fmt, 
-		 ictx->width, 
+		 deint,
+		 ictx->pix_fmt,
+		 ictx->width,
 		 ictx->height);
 
   if (avpicture_deinterlace(&deint_pic,
@@ -1241,12 +1281,12 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
   buf = av_malloc(len + FF_INPUT_BUFFER_PADDING_SIZE);
   memset(buf, 0, len);
 
-  avpicture_fill((AVPicture *)vs->vid_enc_frame, 
-                 buf, 
+  avpicture_fill((AVPicture *)vs->vid_enc_frame,
+                 buf,
                  octx->pix_fmt,
-                 octx->width, 
+                 octx->width,
                  octx->height);
- 
+
   vs->vid_scaler = sws_getCachedContext(vs->vid_scaler,
 				    ictx->width,
 				    ictx->height,
@@ -1258,13 +1298,13 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
 				    NULL,
 				    NULL,
 				    NULL);
- 
-  if (sws_scale(vs->vid_scaler, 
-		(const uint8_t * const*)deint_pic.data, 
-		deint_pic.linesize, 
-		0, 
-		ictx->height, 
-		vs->vid_enc_frame->data, 
+
+  if (sws_scale(vs->vid_scaler,
+		(const uint8_t * const*)deint_pic.data,
+		deint_pic.linesize,
+		0,
+		ictx->height,
+		vs->vid_enc_frame->data,
 		vs->vid_enc_frame->linesize) < 0) {
     tvherror("transcode", "%04X: Cannot scale frame", shortid(t));
     transcoder_stream_invalidate(ts);
@@ -1316,7 +1356,7 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
 
 
 /**
- * 
+ *
  */
 static void
 transcoder_packet(transcoder_t *t, th_pkt_t *pkt)
@@ -1341,7 +1381,7 @@ transcoder_packet(transcoder_t *t, th_pkt_t *pkt)
 
 
 /**
- * 
+ *
  */
 static void
 transcoder_destroy_stream(transcoder_t *t, transcoder_stream_t *ts)
@@ -1351,7 +1391,7 @@ transcoder_destroy_stream(transcoder_t *t, transcoder_stream_t *ts)
 
 
 /**
- * 
+ *
  */
 static int
 transcoder_init_stream(transcoder_t *t, streaming_start_component_t *ssc)
@@ -1378,7 +1418,7 @@ transcoder_init_stream(transcoder_t *t, streaming_start_component_t *ssc)
 
 
 /**
- * 
+ *
  */
 static void
 transcoder_destroy_subtitle(transcoder_t *t, transcoder_stream_t *ts)
@@ -1402,7 +1442,7 @@ transcoder_destroy_subtitle(transcoder_t *t, transcoder_stream_t *ts)
 
 
 /**
- * 
+ *
  */
 static int
 transcoder_init_subtitle(transcoder_t *t, streaming_start_component_t *ssc)
@@ -1459,7 +1499,7 @@ transcoder_init_subtitle(transcoder_t *t, streaming_start_component_t *ssc)
 
 
 /**
- * 
+ *
  */
 static void
 transcoder_destroy_audio(transcoder_t *t, transcoder_stream_t *ts)
@@ -1489,7 +1529,7 @@ transcoder_destroy_audio(transcoder_t *t, transcoder_stream_t *ts)
 
 
 /**
- * 
+ *
  */
 static int
 transcoder_init_audio(transcoder_t *t, streaming_start_component_t *ssc)
@@ -1549,7 +1589,7 @@ transcoder_init_audio(transcoder_t *t, streaming_start_component_t *ssc)
   ssc->ssc_gh       = NULL;
 
   if(tp->tp_channels > 0)
-    as->aud_channels = tp->tp_channels; 
+    as->aud_channels = tp->tp_channels;
   if(tp->tp_abitrate > 0)
     as->aud_bitrate = tp->tp_abitrate * 1000;
 
@@ -1562,7 +1602,7 @@ transcoder_init_audio(transcoder_t *t, streaming_start_component_t *ssc)
 
 
 /**
- * 
+ *
  */
 static void
 transcoder_destroy_video(transcoder_t *t, transcoder_stream_t *ts)
@@ -1598,7 +1638,7 @@ transcoder_destroy_video(transcoder_t *t, transcoder_stream_t *ts)
 
 
 /**
- * 
+ *
  */
 static int
 transcoder_init_video(transcoder_t *t, streaming_start_component_t *ssc)
@@ -1732,7 +1772,7 @@ transcoder_calc_stream_count(transcoder_t *t, streaming_start_t *ss) {
 
 
 /**
- * 
+ *
  */
 static streaming_start_t *
 transcoder_start(transcoder_t *t, streaming_start_t *src)
@@ -1755,13 +1795,13 @@ transcoder_start(transcoder_t *t, streaming_start_t *src)
   for (i = j = 0; i < src->ss_num_components && j < n; i++) {
     streaming_start_component_t *ssc_src = &src->ss_components[i];
     streaming_start_component_t *ssc = &ss->ss_components[j];
-    
+
     if (ssc_src->ssc_disabled)
       continue;
 
     *ssc = *ssc_src;
 
-    if (SCT_ISVIDEO(ssc->ssc_type)) 
+    if (SCT_ISVIDEO(ssc->ssc_type))
       rc = transcoder_init_video(t, ssc);
 
     else if (SCT_ISAUDIO(ssc->ssc_type))
@@ -1785,13 +1825,13 @@ transcoder_start(transcoder_t *t, streaming_start_t *src)
 
 
 /**
- * 
+ *
  */
 static void
 transcoder_stop(transcoder_t *t)
 {
   transcoder_stream_t *ts;
-  
+
   while ((ts = LIST_FIRST(&t->t_stream_list))) {
     LIST_REMOVE(ts, ts_link);
 
@@ -1802,7 +1842,7 @@ transcoder_stop(transcoder_t *t)
 
 
 /**
- * 
+ *
  */
 static void
 transcoder_input(void *opaque, streaming_message_t *sm)
@@ -1838,7 +1878,9 @@ transcoder_input(void *opaque, streaming_message_t *sm)
   case SMT_EXIT:
   case SMT_SERVICE_STATUS:
   case SMT_SIGNAL_STATUS:
+  case SMT_DESCRAMBLE_INFO:
   case SMT_NOSTART:
+  case SMT_NOSTART_WARN:
   case SMT_MPEGTS:
     streaming_target_deliver2(t->t_output, sm);
     break;
@@ -1866,10 +1908,10 @@ transcoder_create(streaming_target_t *output)
 
 
 /**
- * 
+ *
  */
 void
-transcoder_set_properties(streaming_target_t *st, 
+transcoder_set_properties(streaming_target_t *st,
 			  transcoder_props_t *props)
 {
   transcoder_t *t = (transcoder_t *)st;
@@ -1888,7 +1930,7 @@ transcoder_set_properties(streaming_target_t *st,
 
 
 /**
- * 
+ *
  */
 void
 transcoder_destroy(streaming_target_t *st)
@@ -1901,8 +1943,8 @@ transcoder_destroy(streaming_target_t *st)
 
 
 /**
- * 
- */ 
+ *
+ */
 htsmsg_t *
 transcoder_get_capabilities(int experimental)
 {
@@ -1923,7 +1965,7 @@ transcoder_get_capabilities(int experimental)
       continue;
 
     sct = codec_id2streaming_component_type(p->id);
-    if (sct == SCT_NONE)
+    if (sct == SCT_NONE || sct == SCT_UNKNOWN)
       continue;
 
     m = htsmsg_create_map();
@@ -1943,7 +1985,7 @@ transcoder_get_capabilities(int experimental)
 
 
 /*
- * 
+ *
  */
 void transcoding_init(void)
 {

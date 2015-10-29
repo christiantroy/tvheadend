@@ -35,7 +35,7 @@ typedef struct globalheaders {
 } globalheaders_t;
 
 #define PTS_MASK      0x1ffffffffLL
-#define MAX_SCAN_TIME 3000  // in ms
+#define MAX_SCAN_TIME 3500  // in ms
 
 /**
  *
@@ -43,7 +43,8 @@ typedef struct globalheaders {
 static inline int
 gh_require_meta(int type)
 {
-  return type == SCT_H264 ||
+  return type == SCT_HEVC ||
+         type == SCT_H264 ||
          type == SCT_MPEG2VIDEO ||
          type == SCT_MP4A ||
          type == SCT_AAC ||
@@ -330,7 +331,9 @@ gh_hold(globalheaders_t *gh, streaming_message_t *sm)
   case SMT_EXIT:
   case SMT_SERVICE_STATUS:
   case SMT_SIGNAL_STATUS:
+  case SMT_DESCRAMBLE_INFO:
   case SMT_NOSTART:
+  case SMT_NOSTART_WARN:
   case SMT_MPEGTS:
   case SMT_SPEED:
   case SMT_SKIP:
@@ -365,7 +368,9 @@ gh_pass(globalheaders_t *gh, streaming_message_t *sm)
   case SMT_EXIT:
   case SMT_SERVICE_STATUS:
   case SMT_SIGNAL_STATUS:
+  case SMT_DESCRAMBLE_INFO:
   case SMT_NOSTART:
+  case SMT_NOSTART_WARN:
   case SMT_MPEGTS:
   case SMT_SKIP:
   case SMT_SPEED:

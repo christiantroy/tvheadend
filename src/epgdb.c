@@ -172,17 +172,17 @@ void epg_init ( void )
   /* Map file to memory */
   if ( fstat(fd, &st) != 0 ) {
     tvhlog(LOG_ERR, "epgdb", "failed to detect database size");
-    return;
+    goto end;
   }
   if ( !st.st_size ) {
     tvhlog(LOG_DEBUG, "epgdb", "database is empty");
-    return;
+    goto end;
   }
   remain   = st.st_size;
   rp = mem = mmap(NULL, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
   if ( mem == MAP_FAILED ) {
     tvhlog(LOG_ERR, "epgdb", "failed to mmap database");
-    return;
+    goto end;
   }
 
   /* Process */
@@ -244,6 +244,7 @@ void epg_init ( void )
 
   /* Close file */
   munmap(mem, st.st_size);
+end:
   close(fd);
 }
 
@@ -332,8 +333,9 @@ void epg_save ( void )
 
   sbuf_init_fixed(sb, EPG_DB_ALLOC_STEP);
 
-  if (epggrab_epgdb_periodicsave)
-    gtimer_arm(&epggrab_save_timer, epg_save_callback, NULL, epggrab_epgdb_periodicsave);
+  if (epggrab_conf.epgdb_periodicsave)
+    gtimer_arm(&epggrab_save_timer, epg_save_callback, NULL,
+               epggrab_conf.epgdb_periodicsave * 3600);
 
   memset(&stats, 0, sizeof(stats));
   if ( _epg_write_sect(sb, "config") ) goto error;
@@ -360,6 +362,7 @@ void epg_save ( void )
   }
   if ( _epg_write_sect(sb, "broadcasts") ) goto error;
   CHANNEL_FOREACH(ch) {
+    if (ch->ch_epg_parent) continue;
     RB_FOREACH(ebc, &ch->ch_epg_schedule, sched_link) {
       if (_epg_write(sb, epg_broadcast_serialize(ebc))) goto error;
       stats.broadcasts.total++;

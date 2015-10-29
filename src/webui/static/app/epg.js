@@ -225,7 +225,7 @@ tvheadend.epgDetails = function(event) {
 
         buttons.push(new Ext.Button({
             handler: function() { win.close(); },
-            text: "Close"
+            text: _("Close")
         }));
 
     }
@@ -911,13 +911,12 @@ tvheadend.epg = function() {
     tvheadend.comet.on('epg', function(m) {
         if (!panel.isVisible())
             return;
-        if ('delete' in m) {
-            for (var i = 0; i < m['delete'].length; i++) {
-                var r = epgStore.getById(m['delete'][i]);
+        if ('delete' in m)
+            Ext.each(m['delete'], function(d) {
+                var r = epgStore.getById(d);
                 if (r)
                   epgStore.remove(r);
-            }
-        }
+            });
         if (m.update || m.dvr_update || m.dvr_delete) {
             var a = m.update || m.dvr_update || m.dvr_delete;
             if (m.update && m.dvr_update)
@@ -925,31 +924,22 @@ tvheadend.epg = function() {
             if (m.update || m.dvr_update)
                 a = a.concat(m.dvr_delete);
             var ids = [];
-            for (var i = 0; i < a.length; i++) {
-                var r = epgStore.getById(a[i]);
+            Ext.each(a, function (id) {
+                var r = epgStore.getById(id);
                 if (r)
                   ids.push(r.id);
-            }
+            });
             if (ids) {
                 Ext.Ajax.request({
                     url: 'api/epg/events/load',
                     params: {
-                        eventId: ids
+                        eventId: Ext.encode(ids)
                     },
                     success: function(d) {
                         d = json_decode(d);
-                        for (var i = 0; i < d.length; i++) {
-                            var r = epgStore.getById(d[i].eventId);
-                            if (r) {
-                                for (var j = 0; j < r.store.fields.items.length; j++) {
-                                    var n = r.store.fields.items[j];
-                                    var v = d[i][n.name];
-                                    r.data[n.name] = n.convert((v !== undefined) ? v : n.defaultValue, v);
-                                }
-                                r.json = d[i];
-                                r.commit();
-                            }
-                        }
+                        Ext.each(d, function(jd) {
+                            tvheadend.replace_entry(epgStore.getById(jd.eventId), jd);
+                        });
                     },
                     failure: function(response, options) {
                         Ext.MessageBox.alert(_('EPG Update'), response.statusText);
@@ -1031,7 +1021,7 @@ tvheadend.epg = function() {
                 + '<div class="x-smallhdr">' + _('Genre') + ':</div>' + contentType + '<br>'
                 + '<div class="x-smallhdr">' + _('Duration') + ':</div>' + duration + '<br>'
                 + '<br><br>'
-                + sprintf(_('Currently this will match (and record) %d events.'), epgStore.GetTotalCount())
+                + sprintf(_('Currently this will match (and record) %d events.'), epgStore.getTotalCount())
                 + ' ' + 'Are you sure?',
             function(button) {
                 if (button === 'no')

@@ -35,15 +35,21 @@
 #include "notify.h"
 
 struct dvr_entry_list dvrentries;
+static int dvr_in_init;
 
 #if ENABLE_DBUS_1
 static gtimer_t dvr_dbus_timer;
 #endif
 
 static void dvr_entry_destroy(dvr_entry_t *de, int delconf);
+static void dvr_entry_set_timer(dvr_entry_t *de);
+static void dvr_timer_rerecord(void *aux);
 static void dvr_timer_expire(void *aux);
+static void dvr_timer_remove_files(void *aux);
+static void dvr_entry_start_recording(dvr_entry_t *de, int clone);
 static void dvr_timer_start_recording(void *aux);
 static void dvr_timer_stop_recording(void *aux);
+static int dvr_entry_rerecord(dvr_entry_t *de);
 
 /*
  *
@@ -118,6 +124,78 @@ dvr_entry_assign_broadcast(dvr_entry_t *de, epg_broadcast_t *bcast)
 }
 
 /*
+ *
+ */
+static void
+dvr_entry_dont_rerecord(dvr_entry_t *de, int dont_rerecord)
+{
+  dont_rerecord = dont_rerecord ? 1 : 0;
+  if (de->de_dont_rerecord ? 1 : 0 != dont_rerecord) {
+    de->de_dont_rerecord = dont_rerecord;
+    dvr_entry_save(de);
+    idnode_notify_changed(&de->de_id);
+    htsp_dvr_entry_update(de);
+  }
+}
+
+/*
+ *
+ */
+static int
+dvr_entry_change_parent_child(dvr_entry_t *parent, dvr_entry_t *child, void *origin, int save)
+{
+  dvr_entry_t *p;
+
+  if (parent == NULL && child == NULL)
+    return 0;
+  if (parent && parent->de_child == child) {
+    assert(child == NULL || child->de_parent == parent);
+    return 0;
+  }
+  if (child && child->de_parent == parent) {
+    assert(parent == NULL || parent->de_child == child);
+    return 0;
+  }
+  if (child == NULL) {
+    if (parent->de_child) {
+      p = parent->de_child->de_parent;
+      parent->de_child->de_parent = NULL;
+      if (save && p && p != origin) dvr_entry_save(p);
+      parent->de_child = NULL;
+      if (save && origin != parent) dvr_entry_save(parent);
+      return 1;
+    }
+    return 0;
+  }
+  if (parent == NULL) {
+    if (child->de_parent) {
+      p = child->de_parent->de_child;
+      child->de_parent->de_child = NULL;
+      if (save && p && p != origin) dvr_entry_save(p);
+      child->de_parent = NULL;
+      if (save && origin != child) dvr_entry_save(child);
+      return 1;
+    }
+    return 0;
+  }
+  if (parent->de_child) {
+    p = parent->de_child->de_parent;
+    parent->de_child->de_parent = NULL;
+    if (save && p) dvr_entry_save(p);
+  }
+  if (child->de_parent) {
+    p = child->de_parent->de_child;
+    child->de_parent->de_child = NULL;
+    if (save && p) dvr_entry_save(p);
+  }
+  parent->de_child = child;
+  child->de_parent = parent;
+  if (save && origin != parent) dvr_entry_save(parent);
+  if (save && origin != child) dvr_entry_save(child);
+  return 1;
+}
+
+/*
  * Start / stop time calculators
  */
 static inline int extra_valid(time_t extra)
@@ -178,12 +256,26 @@ dvr_entry_get_mc( dvr_entry_t *de )
   return profile_get_mc(de->de_config->dvr_profile);
 }
 
-int
-dvr_entry_get_retention( dvr_entry_t *de )
+uint32_t
+dvr_entry_get_retention_days( dvr_entry_t *de )
 {
   if (de->de_retention > 0)
     return de->de_retention;
-  return de->de_config->dvr_retention_days;
+  return dvr_retention_cleanup(de->de_config->dvr_retention_days);
+}
+
+uint32_t
+dvr_entry_get_removal_days ( dvr_entry_t *de )
+{
+  if (de->de_removal > 0)
+    return de->de_removal;
+  return dvr_retention_cleanup(de->de_config->dvr_removal_days);
+}
+
+uint32_t
+dvr_entry_get_rerecord_errors( dvr_entry_t *de )
+{
+  return de->de_config->dvr_rerecord_errors;
 }
 
 /*
@@ -228,10 +320,38 @@ dvr_dbus_timer_cb( void *aux )
  *
  */
 static void
+dvr_entry_retention_arm(dvr_entry_t *de, gti_callback_t *cb, time_t when)
+{
+  uint32_t rerecord = dvr_entry_get_rerecord_errors(de);
+  if (rerecord && (when - dispatch_clock) > 3600) {
+    when = dispatch_clock + 3600;
+    cb = dvr_timer_rerecord;
+  }
+  gtimer_arm_abs(&de->de_timer, cb, de, when);
+}
+
+/*
+ *
+ */
+static void
 dvr_entry_retention_timer(dvr_entry_t *de)
 {
-  gtimer_arm_abs(&de->de_timer, dvr_timer_expire, de,
-                 de->de_stop + dvr_entry_get_retention(de) * 86400);
+  time_t stop = de->de_stop;
+  uint32_t removal = dvr_entry_get_removal_days(de);
+  uint32_t retention = dvr_entry_get_retention_days(de);
+  if (removal > retention)
+    removal = retention;
+  stop = de->de_stop + removal * (time_t)86400;
+  if (removal > 0 || retention == 0) {
+    if (stop > dispatch_clock) {
+      dvr_entry_retention_arm(de, dvr_timer_remove_files, stop);
+      return;
+    }
+    if (dvr_get_filename(de))
+      dvr_entry_delete(de, 1);
+  }
+  stop = de->de_stop + retention * (time_t)86400;
+  dvr_entry_retention_arm(de, dvr_timer_expire, stop);
 }
 
 /*
@@ -240,7 +360,7 @@ dvr_entry_retention_timer(dvr_entry_t *de)
 static void
 dvr_entry_nostate(dvr_entry_t *de, int error_code)
 {
-  dvr_entry_set_state(de, DVR_NOSTATE, DVR_RS_PENDING, de->de_last_error);
+  dvr_entry_set_state(de, DVR_NOSTATE, DVR_RS_PENDING, error_code);
   dvr_entry_retention_timer(de);
 }
 
@@ -250,8 +370,14 @@ dvr_entry_nostate(dvr_entry_t *de, int error_code)
 static void
 dvr_entry_missed_time(dvr_entry_t *de, int error_code)
 {
+  dvr_autorec_entry_t *dae = de->de_autorec;
+
   dvr_entry_set_state(de, DVR_MISSED_TIME, DVR_RS_PENDING, error_code);
   dvr_entry_retention_timer(de);
+
+  // Trigger autorec update in case of max schedules limit
+  if (dae && dae->dae_max_sched_count > 0)
+    dvr_autorec_changed(dae, 0);
 }
 
 /*
@@ -265,6 +391,8 @@ dvr_entry_completed(dvr_entry_t *de, int error_code)
   dvr_inotify_add(de);
 #endif
   dvr_entry_retention_timer(de);
+  if (de->de_autorec)
+    dvr_autorec_completed(de, error_code);
 }
 
 /**
@@ -313,6 +441,8 @@ dvr_entry_status(dvr_entry_t *de)
       return N_("Completed OK");
 
   case DVR_MISSED_TIME:
+    if (de->de_last_error == SM_CODE_SVC_NOT_ENABLED)
+      return streaming_code2txt(de->de_last_error);
     return N_("Time missed");
 
   default:
@@ -327,24 +457,36 @@ dvr_entry_status(dvr_entry_t *de)
 const char *
 dvr_entry_schedstatus(dvr_entry_t *de)
 {
+  const char *s;
+  uint32_t rerecord;
+
   switch(de->de_sched_state) {
   case DVR_SCHEDULED:
-    return "scheduled";
+    s = "scheduled";
+    break;
   case DVR_RECORDING:
-    if(de->de_last_error)
-      return "recordingError";
-    else
-      return "recording";
+    s = de->de_last_error ? "recordingError" : "recording";
+    break;
   case DVR_COMPLETED:
+    s = "completed";
     if(de->de_last_error || dvr_get_filesize(de) == -1)
-      return "completedError";
-    else
-      return "completed";
+      s = "completedError";
+    rerecord = de->de_dont_rerecord ? 0 : dvr_entry_get_rerecord_errors(de);
+    if(rerecord && (de->de_errors || de->de_data_errors > rerecord))
+      s = "completedRerecord";
+    break;
   case DVR_MISSED_TIME:
-    return "completedError";
+    s = "completedError";
+    if (de->de_last_error == SM_CODE_SVC_NOT_ENABLED)
+      s = "completedWarning";
+    rerecord = de->de_dont_rerecord ? 0 : dvr_entry_get_rerecord_errors(de);
+    if(rerecord)
+      s = "completedRerecord";
+    break;
   default:
-    return "unknown";
+    s = "unknown";
   }
+  return s;
 }
 
 /**
@@ -375,17 +517,23 @@ dvr_entry_set_timer(dvr_entry_t *de)
 {
   time_t now, start, stop;
 
+  if (dvr_in_init)
+    return;
+
   time(&now);
 
   start = dvr_entry_get_start_time(de);
   stop  = dvr_entry_get_stop_time(de);
 
-  if(now >= stop || de->de_dont_reschedule) {
+  if (now >= stop || de->de_dont_reschedule) {
 
     if(htsmsg_is_empty(de->de_files))
       dvr_entry_missed_time(de, de->de_last_error);
     else
       dvr_entry_completed(de, de->de_last_error);
+
+    if(dvr_entry_rerecord(de))
+      return;
 
   } else if (de->de_sched_state == DVR_RECORDING)  {
 
@@ -428,14 +576,14 @@ dvr_entry_get_episode(epg_broadcast_t *bcast, char *buf, int len)
  * Find dvr entry using 'fuzzy' search
  */
 static int
-dvr_entry_fuzzy_match(dvr_entry_t *de, epg_broadcast_t *e)
+dvr_entry_fuzzy_match(dvr_entry_t *de, epg_broadcast_t *e, uint16_t eid, int64_t time_window)
 {
   time_t t1, t2;
   const char *title1, *title2;
   char buf[64];
 
   /* Matching ID */
-  if (de->de_dvb_eid && de->de_dvb_eid == e->dvb_eid)
+  if (de->de_dvb_eid && eid && de->de_dvb_eid == eid)
     return 1;
 
   /* No title */
@@ -446,12 +594,12 @@ dvr_entry_fuzzy_match(dvr_entry_t *de, epg_broadcast_t *e)
 
   /* Wrong length (+/-20%) */
   t1 = de->de_stop - de->de_start;
-  t2  = e->stop - e->start;
+  t2 = e->stop - e->start;
   if ( abs(t2 - t1) > (t1 / 5) )
     return 0;
 
   /* Outside of window */
-  if (abs(e->start - de->de_start) > de->de_config->dvr_update_window)
+  if ((int64_t)llabs(e->start - de->de_start) > time_window)
     return 0;
   
   /* Title match (or contains?) */
@@ -470,11 +618,12 @@ dvr_entry_fuzzy_match(dvr_entry_t *de, epg_broadcast_t *e)
  * Create the event from config
  */
 dvr_entry_t *
-dvr_entry_create(const char *uuid, htsmsg_t *conf)
+dvr_entry_create(const char *uuid, htsmsg_t *conf, int clone)
 {
   dvr_entry_t *de, *de2;
   int64_t start, stop;
   htsmsg_t *m;
+  char ubuf[UUID_HEX_SIZE];
 
   if (conf) {
     if (htsmsg_get_s64(conf, "start", &start))
@@ -495,6 +644,7 @@ dvr_entry_create(const char *uuid, htsmsg_t *conf)
     return NULL;
   }
 
+  de->de_enabled = 1;
   de->de_mc = -1;
   de->de_config = dvr_config_find_by_name_default(NULL);
   if (de->de_config)
@@ -511,7 +661,7 @@ dvr_entry_create(const char *uuid, htsmsg_t *conf)
 
   LIST_INSERT_HEAD(&dvrentries, de, de_global_link);
 
-  if (de->de_channel) {
+  if (de->de_channel && !de->de_dont_reschedule && !clone) {
     LIST_FOREACH(de2, &de->de_channel->ch_dvrs, de_channel_link)
       if(de2 != de &&
          de2->de_config == de->de_config &&
@@ -521,16 +671,17 @@ dvr_entry_create(const char *uuid, htsmsg_t *conf)
          strcmp(de2->de_owner ?: "", de->de_owner ?: "") == 0) {
         tvhlog(LOG_INFO, "dvr", "delete entry %s \"%s\" on \"%s\" start time %"PRId64", "
            "scheduled for recording by \"%s\" (duplicate with %s)",
-          idnode_uuid_as_str(&de->de_id),
+          idnode_uuid_as_sstr(&de->de_id),
           lang_str_get(de->de_title, NULL), DVR_CH_NAME(de),
           (int64_t)de2->de_start, de->de_creator ?: "",
-          idnode_uuid_as_str(&de2->de_id));
+          idnode_uuid_as_str(&de2->de_id, ubuf));
         dvr_entry_destroy(de, 0);
         return NULL;
       }
   }
 
-  dvr_entry_set_timer(de);
+  if (!clone)
+    dvr_entry_set_timer(de);
   htsp_dvr_entry_add(de);
 
   return de;
@@ -540,7 +691,7 @@ dvr_entry_create(const char *uuid, htsmsg_t *conf)
  * Create the event
  */
 dvr_entry_t *
-dvr_entry_create_(const char *config_uuid, epg_broadcast_t *e,
+dvr_entry_create_(int enabled, const char *config_uuid, epg_broadcast_t *e,
                   channel_t *ch, time_t start, time_t stop,
                   time_t start_extra, time_t stop_extra,
                   const char *title, const char* subtitle, const char *description,
@@ -548,7 +699,7 @@ dvr_entry_create_(const char *config_uuid, epg_broadcast_t *e,
                   const char *owner,
                   const char *creator, dvr_autorec_entry_t *dae,
                   dvr_timerec_entry_t *dte,
-                  dvr_prio_t pri, int retention,
+                  dvr_prio_t pri, int retention, int removal,
                   const char *comment)
 {
   dvr_entry_t *de;
@@ -559,11 +710,14 @@ dvr_entry_create_(const char *config_uuid, epg_broadcast_t *e,
   htsmsg_t *conf;
 
   conf = htsmsg_create_map();
+  if (enabled >= 0)
+    htsmsg_add_u32(conf, "enabled", !!enabled);
   htsmsg_add_s64(conf, "start", start);
   htsmsg_add_s64(conf, "stop", stop);
-  htsmsg_add_str(conf, "channel", idnode_uuid_as_str(&ch->ch_id));
+  htsmsg_add_str(conf, "channel", idnode_uuid_as_sstr(&ch->ch_id));
   htsmsg_add_u32(conf, "pri", pri);
   htsmsg_add_u32(conf, "retention", retention);
+  htsmsg_add_u32(conf, "removal", removal);
   htsmsg_add_str(conf, "config_name", config_uuid ?: "");
   htsmsg_add_s64(conf, "start_extra", start_extra);
   htsmsg_add_s64(conf, "stop_extra", stop_extra);
@@ -610,16 +764,16 @@ dvr_entry_create_(const char *config_uuid, epg_broadcast_t *e,
     htsmsg_add_u32(conf, "broadcast", e->id);
   if (dae)
   {
-    htsmsg_add_str(conf, "autorec", idnode_uuid_as_str(&dae->dae_id));
+    htsmsg_add_str(conf, "autorec", idnode_uuid_as_sstr(&dae->dae_id));
     htsmsg_add_str(conf, "directory", dae->dae_directory ?: "");
   }
   if (dte)
   {
-    htsmsg_add_str(conf, "timerec", idnode_uuid_as_str(&dte->dte_id));
+    htsmsg_add_str(conf, "timerec", idnode_uuid_as_sstr(&dte->dte_id));
     htsmsg_add_str(conf, "directory", dte->dte_directory ?: "");
   }
 
-  de = dvr_entry_create(NULL, conf);
+  de = dvr_entry_create(NULL, conf, 0);
 
   htsmsg_destroy(conf);
 
@@ -633,7 +787,7 @@ dvr_entry_create_(const char *config_uuid, epg_broadcast_t *e,
 
   tvhlog(LOG_INFO, "dvr", "entry %s \"%s\" on \"%s\" starting at %s, "
 	 "scheduled for recording by \"%s\"",
-         idnode_uuid_as_str(&de->de_id),
+         idnode_uuid_as_sstr(&de->de_id),
 	 lang_str_get(de->de_title, NULL), DVR_CH_NAME(de), tbuf, creator ?: "");
 
   dvr_entry_save(de);
@@ -644,7 +798,7 @@ dvr_entry_create_(const char *config_uuid, epg_broadcast_t *e,
  *
  */
 dvr_entry_t *
-dvr_entry_create_htsp(const char *config_uuid,
+dvr_entry_create_htsp(int enabled, const char *config_uuid,
                       channel_t *ch, time_t start, time_t stop,
                       time_t start_extra, time_t stop_extra,
                       const char *title, const char* subtitle,
@@ -652,17 +806,19 @@ dvr_entry_create_htsp(const char *config_uuid,
                       epg_genre_t *content_type,
                       const char *owner,
                       const char *creator, dvr_autorec_entry_t *dae,
-                      dvr_prio_t pri, int retention,
+                      dvr_prio_t pri, int retention, int removal,
                       const char *comment)
 {
+  char ubuf[UUID_HEX_SIZE];
   dvr_config_t *cfg = dvr_config_find_by_uuid(config_uuid);
   if (!cfg)
     cfg = dvr_config_find_by_name(config_uuid);
-  return dvr_entry_create_(cfg ? idnode_uuid_as_str(&cfg->dvr_id) : NULL,
+  return dvr_entry_create_(enabled,
+                           cfg ? idnode_uuid_as_str(&cfg->dvr_id, ubuf) : NULL,
                            NULL,
                            ch, start, stop, start_extra, stop_extra,
                            title, subtitle, description, lang, content_type,
-                           owner, creator, dae, NULL, pri, retention,
+                           owner, creator, dae, NULL, pri, retention, removal,
                            comment);
 }
 
@@ -670,24 +826,152 @@ dvr_entry_create_htsp(const char *config_uuid,
  *
  */
 dvr_entry_t *
-dvr_entry_create_by_event(const char *config_uuid,
+dvr_entry_create_by_event(int enabled, const char *config_uuid,
                           epg_broadcast_t *e,
                           time_t start_extra, time_t stop_extra,
                           const char *owner,
                           const char *creator, dvr_autorec_entry_t *dae,
-                          dvr_prio_t pri, int retention,
+                          dvr_prio_t pri, int retention, int removal,
                           const char *comment)
 {
   if(!e->channel || !e->episode || !e->episode->title)
     return NULL;
 
-  return dvr_entry_create_(config_uuid, e,
+  return dvr_entry_create_(enabled, config_uuid, e,
                            e->channel, e->start, e->stop,
                            start_extra, stop_extra,
                            NULL, NULL, NULL, NULL,
                            LIST_FIRST(&e->episode->genre),
-                           owner, creator, dae, NULL, pri, retention,
-                           comment);
+                           owner, creator, dae, NULL, pri,
+                           retention, removal, comment);
+}
+
+/**
+ * Clone existing DVR entry and stop the previous
+ */
+dvr_entry_t *
+dvr_entry_clone(dvr_entry_t *de)
+{
+  htsmsg_t *conf = htsmsg_create_map();
+  dvr_entry_t *n;
+
+  lock_assert(&global_lock);
+
+  idnode_save(&de->de_id, conf);
+  n = dvr_entry_create(NULL, conf, 1);
+  htsmsg_destroy(conf);
+
+  if (n) {
+    if(de->de_sched_state == DVR_RECORDING) {
+      de->de_dont_reschedule = 1;
+      dvr_stop_recording(de, SM_CODE_SOURCE_RECONFIGURED, 1, 1);
+      dvr_rec_migrate(de, n);
+      n->de_start = dispatch_clock;
+      dvr_entry_start_recording(n, 1);
+    } else {
+      dvr_entry_set_timer(n);
+    }
+    dvr_entry_save(n);
+  }
+
+  return n == NULL ? de : n;
+}
+
+/**
+ *
+ */
+static int
+dvr_entry_rerecord(dvr_entry_t *de)
+{
+  uint32_t rerecord;
+  epg_broadcast_t *e, *ev;
+  dvr_entry_t *de2;
+  char cfg_uuid[UUID_HEX_SIZE];
+  char buf[512];
+  int64_t fsize1, fsize2;
+  time_t pre;
+
+  if (dvr_in_init || de->de_dont_rerecord)
+    return 0;
+  rerecord = dvr_entry_get_rerecord_errors(de);
+  if (rerecord == 0)
+    return 0;
+  if ((de2 = de->de_parent) != NULL) {
+    if (de->de_sched_state == DVR_COMPLETED &&
+        de->de_errors == 0 &&
+        de->de_data_errors < de->de_parent->de_data_errors) {
+      fsize1 = dvr_get_filesize(de);
+      fsize2 = dvr_get_filesize(de2);
+      if (fsize1 / 5 < fsize2 / 6) {
+        goto not_so_good;
+      } else {
+        dvr_entry_cancel_delete(de2, 1);
+      }
+    } else if (de->de_sched_state == DVR_COMPLETED) {
+      if(dvr_get_filesize(de) == -1) {
+delete_me:
+        dvr_entry_cancel_delete(de, 0);
+        dvr_entry_rerecord(de2);
+        return 1;
+      }
+not_so_good:
+      de->de_retention = 1;
+      dvr_entry_change_parent_child(de->de_parent, NULL, NULL, 1);
+      dvr_entry_completed(de, SM_CODE_WEAK_STREAM);
+      return 0;
+    } else if (de->de_sched_state == DVR_MISSED_TIME) {
+      goto delete_me;
+    }
+  }
+  if (de->de_child)
+    return 0;
+  if (de->de_enabled == 0)
+    return 0;
+  if (de->de_channel == NULL)
+    return 0;
+  if (de->de_sched_state == DVR_SCHEDULED ||
+      de->de_sched_state == DVR_RECORDING)
+    return 0;
+  if (de->de_sched_state == DVR_COMPLETED &&
+      de->de_last_error == SM_CODE_WEAK_STREAM)
+    return 0;
+  /* rerecord if - DVR_NOSTATE, DVR_MISSED_TIME */
+  if (de->de_sched_state == DVR_COMPLETED &&
+      rerecord > de->de_data_errors && de->de_errors <= 0)
+    return 0;
+
+  e = NULL;
+  pre = (60 * dvr_entry_get_extra_time_pre(de)) - 30;
+  RB_FOREACH(ev, &de->de_channel->ch_epg_schedule, sched_link) {
+    if (de->de_bcast == ev) continue;
+    if (ev->start - pre < dispatch_clock) continue;
+    if (dvr_entry_fuzzy_match(de, ev, 0, INT64_MAX))
+      if (!e || e->start > ev->start)
+        e = ev;
+  }
+
+  if (e == NULL)
+    return 0;
+
+  tvhtrace("dvr", "  rerecord event %s on %s @ %"PRItime_t
+                   " to %"PRItime_t,
+                   epg_broadcast_get_title(e, NULL),
+                   channel_get_name(e->channel),
+                   e->start, e->stop);
+
+  idnode_uuid_as_str(&de->de_config->dvr_id, cfg_uuid);
+  snprintf(buf, sizeof(buf), _("Re-record%s%s"),
+           de->de_comment ? ": " : "", de->de_comment ?: "");
+
+  de2 = dvr_entry_create_by_event(1, cfg_uuid, e,
+                                  de->de_start_extra, de->de_stop_extra,
+                                  de->de_owner, de->de_creator, NULL,
+                                  de->de_pri, de->de_retention, de->de_removal,
+                                  buf);
+  if (de2)
+    dvr_entry_change_parent_child(de, de2, NULL, 1);
+
+  return 0;
 }
 
 /**
@@ -786,26 +1070,42 @@ static dvr_entry_t *_dvr_duplicate_event(dvr_entry_t* de)
  *
  */
 void
-dvr_entry_create_by_autorec(epg_broadcast_t *e, dvr_autorec_entry_t *dae)
+dvr_entry_create_by_autorec(int enabled, epg_broadcast_t *e, dvr_autorec_entry_t *dae)
 {
-  char buf[200];
+  char buf[512];
+  char ubuf[UUID_HEX_SIZE];
+  dvr_entry_t *de;
+  uint32_t count = 0;
 
   /* Identical duplicate detection
      NOTE: Semantic duplicate detection is deferred to the start time of recording and then done using _dvr_duplicate_event by dvr_timer_start_recording. */
-  dvr_entry_t* de;
   LIST_FOREACH(de, &dvrentries, de_global_link) {
     if (de->de_bcast == e || (de->de_bcast && de->de_bcast->episode == e->episode))
       return;
   }
 
-  snprintf(buf, sizeof(buf), "Auto recording%s%s",
+  /* Handle max schedules limit for autorrecord */
+  if (dae->dae_max_sched_count > 0){
+    count = 0;
+    LIST_FOREACH(de, &dae->dae_spawns, de_autorec_link)
+      if ((de->de_sched_state == DVR_SCHEDULED) ||
+          (de->de_sched_state == DVR_RECORDING)) count++;
+
+    if (count >= dae->dae_max_sched_count) {
+      tvhlog(LOG_DEBUG, "dvr", "Autorecord \"%s\": Not scheduling \"%s\" because of autorecord max schedules limit reached",
+             dae->dae_name, lang_str_get(e->episode->title, NULL));
+      return;
+    }
+  }
+
+  snprintf(buf, sizeof(buf), _("Auto recording%s%s"),
            dae->dae_comment ? ": " : "",
            dae->dae_comment ?: "");
 
-  dvr_entry_create_by_event(idnode_uuid_as_str(&dae->dae_config->dvr_id), e,
-                            dae->dae_start_extra, dae->dae_stop_extra,
-                            dae->dae_owner, dae->dae_creator,
-                            dae, dae->dae_pri, dae->dae_retention, buf);
+  dvr_entry_create_by_event(enabled, idnode_uuid_as_str(&dae->dae_config->dvr_id, ubuf),
+                            e, dae->dae_start_extra, dae->dae_stop_extra,
+                            dae->dae_owner, dae->dae_creator, dae, dae->dae_pri,
+                            dae->dae_retention, dae->dae_removal, buf);
 }
 
 /**
@@ -856,7 +1156,7 @@ static void
 dvr_entry_destroy(dvr_entry_t *de, int delconf)
 {
   if (delconf)
-    hts_settings_remove("dvr/log/%s", idnode_uuid_as_str(&de->de_id));
+    hts_settings_remove("dvr/log/%s", idnode_uuid_as_sstr(&de->de_id));
 
   htsp_dvr_entry_delete(de);
   
@@ -873,6 +1173,11 @@ dvr_entry_destroy(dvr_entry_t *de, int delconf)
     LIST_REMOVE(de, de_channel_link);
   LIST_REMOVE(de, de_global_link);
   de->de_channel = NULL;
+
+  if (de->de_parent)
+    dvr_entry_change_parent_child(de->de_parent, NULL, de, delconf);
+  if (de->de_child)
+    dvr_entry_change_parent_child(de, NULL, de, delconf);
 
   dvr_entry_dec_ref(de);
 }
@@ -911,8 +1216,21 @@ dvr_entry_save(dvr_entry_t *de)
   idnode_save(&de->de_id, m);
   if (de->de_files)
     htsmsg_add_msg(m, "files", htsmsg_copy(de->de_files));
-  hts_settings_save(m, "dvr/log/%s", idnode_uuid_as_str(&de->de_id));
+  hts_settings_save(m, "dvr/log/%s", idnode_uuid_as_sstr(&de->de_id));
   htsmsg_destroy(m);
+}
+
+
+/**
+ *
+ */
+static void
+dvr_timer_rerecord(void *aux)
+{
+  dvr_entry_t *de = aux;
+  if (dvr_entry_rerecord(de))
+    return;
+  dvr_entry_retention_timer(de);
 }
 
 
@@ -924,17 +1242,40 @@ dvr_timer_expire(void *aux)
 {
   dvr_entry_t *de = aux;
   dvr_entry_destroy(de, 1);
- 
 }
 
+
+/**
+ *
+ */
+static void
+dvr_timer_remove_files(void *aux)
+{
+  dvr_entry_t *de = aux;
+  dvr_entry_retention_timer(de);
+}
+
+
+/**
+ *
+ */
 static dvr_entry_t *_dvr_entry_update
-  ( dvr_entry_t *de, epg_broadcast_t *e, channel_t *ch, const char *title,
-    const char *subtitle, const char *desc, const char *lang, time_t start,
-    time_t stop, time_t start_extra, time_t stop_extra, dvr_prio_t pri,
-    int retention )
+  ( dvr_entry_t *de, int enabled, epg_broadcast_t *e, channel_t *ch,
+    const char *title, const char *subtitle, const char *desc,
+    const char *lang, time_t start, time_t stop,
+    time_t start_extra, time_t stop_extra,
+    dvr_prio_t pri, int retention, int removal )
 {
   char buf[40];
   int save = 0, updated = 0;
+
+  if (enabled >= 0) {
+    enabled = !!enabled;
+    if (de->de_enabled != enabled) {
+      de->de_enabled = enabled;
+      save = 1;
+    }
+  }
 
   if (!dvr_entry_is_editable(de)) {
     if (stop > 0) {
@@ -987,6 +1328,10 @@ static dvr_entry_t *_dvr_entry_update
   }
   if (retention && (retention != de->de_retention)) {
     de->de_retention = retention;
+    save = 1;
+  }
+  if (removal && (removal != de->de_removal)) {
+    de->de_removal = removal;
     save = 1;
   }
   if (save) {
@@ -1080,16 +1425,16 @@ dosave:
  */
 dvr_entry_t * 
 dvr_entry_update
-  ( dvr_entry_t *de, channel_t *ch,
+  ( dvr_entry_t *de, int enabled, channel_t *ch,
     const char *title, const char *subtitle,
     const char *desc, const char *lang,
     time_t start, time_t stop,
     time_t start_extra, time_t stop_extra,
-    dvr_prio_t pri, int retention )
+    dvr_prio_t pri, int retention, int removal )
 {
-  return _dvr_entry_update(de, NULL, ch, title, subtitle, desc, lang,
+  return _dvr_entry_update(de, enabled, NULL, ch, title, subtitle, desc, lang,
                            start, stop, start_extra, stop_extra,
-                           pri, retention);
+                           pri, retention, removal);
 }
 
 /**
@@ -1110,7 +1455,7 @@ dvr_event_replaced(epg_broadcast_t *e, epg_broadcast_t *new_e)
     tvhtrace("dvr",
              "dvr entry %s event replaced %s on %s @ %"PRItime_t
              " to %"PRItime_t,
-             idnode_uuid_as_str(&de->de_id),
+             idnode_uuid_as_sstr(&de->de_id),
              epg_broadcast_get_title(e, NULL),
              channel_get_name(e->channel),
              e->start, e->stop);
@@ -1128,7 +1473,8 @@ dvr_event_replaced(epg_broadcast_t *e, epg_broadcast_t *new_e)
     /* Find match */
     } else {
       RB_FOREACH(e, &e->channel->ch_epg_schedule, sched_link) {
-        if (dvr_entry_fuzzy_match(de, e)) {
+        if (dvr_entry_fuzzy_match(de, e, e->dvb_eid,
+                                  de->de_config->dvr_update_window)) {
           tvhtrace("dvr",
                    "  replacement event %s on %s @ %"PRItime_t
                    " to %"PRItime_t,
@@ -1136,7 +1482,7 @@ dvr_event_replaced(epg_broadcast_t *e, epg_broadcast_t *new_e)
                    channel_get_name(e->channel),
                    e->start, e->stop);
           dvr_entry_assign_broadcast(de, e);
-          _dvr_entry_update(de, e, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, 0, DVR_PRIO_NOTSET, 0);
+          _dvr_entry_update(de, -1, e, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, 0, DVR_PRIO_NOTSET, 0, 0);
           return;
         }
       }
@@ -1150,22 +1496,23 @@ void dvr_event_updated ( epg_broadcast_t *e )
   dvr_entry_t *de;
   de = dvr_entry_find_by_event(e);
   if (de)
-    _dvr_entry_update(de, e, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, 0, DVR_PRIO_NOTSET, 0);
+    _dvr_entry_update(de, -1, e, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, 0, DVR_PRIO_NOTSET, 0, 0);
   else {
     LIST_FOREACH(de, &dvrentries, de_global_link) {
       if (de->de_sched_state != DVR_SCHEDULED) continue;
       if (de->de_bcast) continue;
       if (de->de_channel != e->channel) continue;
-      if (dvr_entry_fuzzy_match(de, e)) {
+      if (dvr_entry_fuzzy_match(de, e, e->dvb_eid,
+                                de->de_config->dvr_update_window)) {
         tvhtrace("dvr",
                  "dvr entry %s link to event %s on %s @ %"PRItime_t
                  " to %"PRItime_t,
-                 idnode_uuid_as_str(&de->de_id),
+                 idnode_uuid_as_sstr(&de->de_id),
                  epg_broadcast_get_title(e, NULL),
                  channel_get_name(e->channel),
                  e->start, e->stop);
         dvr_entry_assign_broadcast(de, e);
-        _dvr_entry_update(de, e, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, 0, DVR_PRIO_NOTSET, 0);
+        _dvr_entry_update(de, -1, e, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, 0, DVR_PRIO_NOTSET, 0, 0);
         break;
       }
     }
@@ -1176,11 +1523,13 @@ void dvr_event_updated ( epg_broadcast_t *e )
  *
  */
 void
-dvr_stop_recording(dvr_entry_t *de, int stopcode, int saveconf)
+dvr_stop_recording(dvr_entry_t *de, int stopcode, int saveconf, int clone)
 {
   dvr_rs_state_t rec_state = de->de_rec_state;
+  dvr_autorec_entry_t *dae = de->de_autorec;
 
-  dvr_rec_unsubscribe(de);
+  if (!clone)
+    dvr_rec_unsubscribe(de);
 
   if (stopcode != SM_CODE_INVALID_TARGET &&
       (rec_state == DVR_RS_PENDING ||
@@ -1195,11 +1544,17 @@ dvr_stop_recording(dvr_entry_t *de, int stopcode, int saveconf)
 	 lang_str_get(de->de_title, NULL), DVR_CH_NAME(de),
 	 dvr_entry_status(de));
 
+  if (dvr_entry_rerecord(de))
+    return;
+
   if (saveconf)
     dvr_entry_save(de);
 
-  gtimer_arm_abs(&de->de_timer, dvr_timer_expire, de, 
-		 de->de_stop + dvr_entry_get_retention(de) * 86400);
+  dvr_entry_retention_timer(de);
+
+  // Trigger autorecord update in case of schedules limit
+  if (dae && dae->dae_max_sched_count > 0)
+    dvr_autorec_changed(de->de_autorec, 0);
 }
 
 
@@ -1209,9 +1564,39 @@ dvr_stop_recording(dvr_entry_t *de, int stopcode, int saveconf)
 static void
 dvr_timer_stop_recording(void *aux)
 {
-  dvr_stop_recording(aux, SM_CODE_OK, 1);
+  dvr_stop_recording(aux, SM_CODE_OK, 1, 0);
 }
 
+
+
+/**
+ *
+ */
+static void
+dvr_entry_start_recording(dvr_entry_t *de, int clone)
+{
+  int r;
+
+  if (!de->de_enabled) {
+    dvr_entry_missed_time(de, SM_CODE_SVC_NOT_ENABLED);
+    return;
+  }
+
+  dvr_entry_set_state(de, DVR_RECORDING, DVR_RS_PENDING, SM_CODE_OK);
+
+  tvhlog(LOG_INFO, "dvr", "\"%s\" on \"%s\" recorder starting",
+	 lang_str_get(de->de_title, NULL), DVR_CH_NAME(de));
+
+  if (!clone && (r = dvr_rec_subscribe(de)) < 0) {
+    dvr_entry_completed(de, r == -EPERM ? SM_CODE_USER_ACCESS :
+                           (r == -EOVERFLOW ? SM_CODE_USER_LIMIT :
+                            SM_CODE_BAD_SOURCE));
+    return;
+  }
+
+  gtimer_arm_abs(&de->de_timer, dvr_timer_stop_recording, de, 
+                 dvr_entry_get_stop_time(de));
+}
 
 
 /**
@@ -1221,7 +1606,6 @@ static void
 dvr_timer_start_recording(void *aux)
 {
   dvr_entry_t *de = aux;
-  int r;
 
   if (de->de_channel == NULL || !de->de_channel->ch_enabled) {
     dvr_entry_set_state(de, DVR_NOSTATE, DVR_RS_PENDING, de->de_last_error);
@@ -1230,24 +1614,11 @@ dvr_timer_start_recording(void *aux)
 
   // if duplicate, then delete it now, don't record!
   if (_dvr_duplicate_event(de)) {
-    dvr_entry_cancel_delete(de);
+    dvr_entry_cancel_delete(de, 1);
     return;
   }
 
-  dvr_entry_set_state(de, DVR_RECORDING, DVR_RS_PENDING, SM_CODE_OK);
-
-  tvhlog(LOG_INFO, "dvr", "\"%s\" on \"%s\" recorder starting",
-	 lang_str_get(de->de_title, NULL), DVR_CH_NAME(de));
-
-  if ((r = dvr_rec_subscribe(de)) < 0) {
-    dvr_entry_completed(de, r == -EPERM ? SM_CODE_USER_ACCESS :
-                           (r == -EOVERFLOW ? SM_CODE_USER_LIMIT :
-                            SM_CODE_BAD_SOURCE));
-    return;
-  }
-
-  gtimer_arm_abs(&de->de_timer, dvr_timer_stop_recording, de, 
-                 dvr_entry_get_stop_time(de));
+  dvr_entry_start_recording(de, 0);
 }
 
 
@@ -1306,7 +1677,7 @@ static void
 dvr_entry_purge(dvr_entry_t *de, int delconf)
 {
   if(de->de_sched_state == DVR_RECORDING)
-    dvr_stop_recording(de, SM_CODE_SOURCE_DELETED, delconf);
+    dvr_stop_recording(de, SM_CODE_SOURCE_DELETED, delconf, 0);
 }
 
 
@@ -1321,12 +1692,14 @@ dvr_entry_class_save(idnode_t *self)
   dvr_entry_save(de);
   if (dvr_entry_is_valid(de))
     dvr_entry_set_timer(de);
+
+  htsp_dvr_entry_update(de);
 }
 
 static void
 dvr_entry_class_delete(idnode_t *self)
 {
-  dvr_entry_cancel_delete((dvr_entry_t *)self);
+  dvr_entry_cancel_delete((dvr_entry_t *)self, 0);
 }
 
 static int
@@ -1478,7 +1851,7 @@ dvr_entry_class_config_name_get(void *o)
   static const char *ret;
   dvr_entry_t *de = (dvr_entry_t *)o;
   if (de->de_config)
-    ret = idnode_uuid_as_str(&de->de_config->dvr_id);
+    ret = idnode_uuid_as_sstr(&de->de_config->dvr_id);
   else
     ret = "";
   return &ret;
@@ -1552,7 +1925,7 @@ dvr_entry_class_channel_get(void *o)
   static const char *ret;
   dvr_entry_t *de = (dvr_entry_t *)o;
   if (de->de_channel)
-    ret = idnode_uuid_as_str(&de->de_channel->ch_id);
+    ret = idnode_uuid_as_sstr(&de->de_channel->ch_id);
   else
     ret = "";
   return &ret;
@@ -1572,13 +1945,14 @@ dvr_entry_class_channel_name_set(void *o, const void *v)
 {
   dvr_entry_t *de = (dvr_entry_t *)o;
   channel_t   *ch;
+  char ubuf[UUID_HEX_SIZE];
   if (!dvr_entry_is_editable(de))
     return 0;
   if (!strcmp(de->de_channel_name ?: "", v ?: ""))
     return 0;
   ch = v ? channel_find_by_name(v) : NULL;
   if (ch) {
-    return dvr_entry_class_channel_set(o, idnode_uuid_as_str(&ch->ch_id));
+    return dvr_entry_class_channel_set(o, idnode_uuid_as_str(&ch->ch_id, ubuf));
   } else {
     free(de->de_channel_name);
     de->de_channel_name = v ? strdup(v) : NULL;
@@ -1623,7 +1997,14 @@ static int
 dvr_entry_class_retention_set(void *o, const void *v)
 {
   dvr_entry_t *de = (dvr_entry_t *)o;
-  return dvr_entry_class_int_set(de, &de->de_retention, *(int *)v);
+  return dvr_entry_class_int_set(de, (int *)&de->de_retention, *(int *)v);
+}
+
+static int
+dvr_entry_class_removal_set(void *o, const void *v)
+{
+  dvr_entry_t *de = (dvr_entry_t *)o;
+  return dvr_entry_class_int_set(de, (int *)&de->de_removal, *(int *)v);
 }
 
 static int
@@ -1676,8 +2057,26 @@ dvr_entry_class_autorec_get(void *o)
   static const char *ret;
   dvr_entry_t *de = (dvr_entry_t *)o;
   if (de->de_autorec)
-    ret = idnode_uuid_as_str(&de->de_autorec->dae_id);
+    ret = idnode_uuid_as_sstr(&de->de_autorec->dae_id);
   else
+    ret = "";
+  return &ret;
+}
+
+static const void *
+dvr_entry_class_autorec_caption_get(void *o)
+{
+  static const char *ret;
+  dvr_entry_t *de = (dvr_entry_t *)o;
+  dvr_autorec_entry_t *dae = de->de_autorec;
+  if (dae) {
+    ret = prop_sbuf;
+    snprintf(prop_sbuf, PROP_SBUF_LEN, "%s%s%s%s",
+             dae->dae_name ?: "",
+             dae->dae_comment ? " (" : "",
+             dae->dae_comment,
+             dae->dae_comment ? ")" : "");
+  } else
     ret = "";
   return &ret;
 }
@@ -1710,7 +2109,69 @@ dvr_entry_class_timerec_get(void *o)
   static const char *ret;
   dvr_entry_t *de = (dvr_entry_t *)o;
   if (de->de_timerec)
-    ret = idnode_uuid_as_str(&de->de_timerec->dte_id);
+    ret = idnode_uuid_as_sstr(&de->de_timerec->dte_id);
+  else
+    ret = "";
+  return &ret;
+}
+
+static const void *
+dvr_entry_class_timerec_caption_get(void *o)
+{
+  static const char *ret;
+  dvr_entry_t *de = (dvr_entry_t *)o;
+  dvr_timerec_entry_t *dte = de->de_timerec;
+  if (dte) {
+    ret = prop_sbuf;
+    snprintf(prop_sbuf, PROP_SBUF_LEN, "%s%s%s%s",
+             dte->dte_name ?: "",
+             dte->dte_comment ? " (" : "",
+             dte->dte_comment,
+             dte->dte_comment ? ")" : "");
+  } else
+    ret = "";
+  return &ret;
+}
+
+static int
+dvr_entry_class_parent_set(void *o, const void *v)
+{
+  dvr_entry_t *de = (dvr_entry_t *)o, *de2;
+  if (!dvr_entry_is_editable(de))
+    return 0;
+  de2 = v ? dvr_entry_find_by_uuid(v) : NULL;
+  return dvr_entry_change_parent_child(de2, de, de, 1);
+}
+
+static const void *
+dvr_entry_class_parent_get(void *o)
+{
+  static const char *ret;
+  dvr_entry_t *de = (dvr_entry_t *)o;
+  if (de->de_parent)
+    ret = idnode_uuid_as_sstr(&de->de_parent->de_id);
+  else
+    ret = "";
+  return &ret;
+}
+
+static int
+dvr_entry_class_child_set(void *o, const void *v)
+{
+  dvr_entry_t *de = (dvr_entry_t *)o, *de2;
+  if (!dvr_entry_is_editable(de))
+    return 0;
+  de2 = v ? dvr_entry_find_by_uuid(v) : NULL;
+  return dvr_entry_change_parent_child(de, de2, de, 1);
+}
+
+static const void *
+dvr_entry_class_child_get(void *o)
+{
+  static const char *ret;
+  dvr_entry_t *de = (dvr_entry_t *)o;
+  if (de->de_child)
+    ret = idnode_uuid_as_sstr(&de->de_child->de_id);
   else
     ret = "";
   return &ret;
@@ -1829,7 +2290,7 @@ dvr_entry_class_url_get(void *o)
   s = "";
   if (de->de_sched_state == DVR_COMPLETED ||
       de->de_sched_state == DVR_RECORDING) {
-    snprintf(buf, sizeof(buf), "dvrfile/%s", idnode_uuid_as_str(&de->de_id));
+    snprintf(buf, sizeof(buf), "dvrfile/%s", idnode_uuid_as_sstr(&de->de_id));
     s = buf;
   }
   return &s;
@@ -1989,6 +2450,12 @@ const idclass_t dvr_entry_class = {
   .ic_perm      = dvr_entry_class_perm,
   .ic_properties = (const property_t[]) {
     {
+      .type     = PT_BOOL,
+      .id       = "enabled",
+      .name     = N_("Enabled"),
+      .off      = offsetof(dvr_entry_t, de_enabled),
+    },
+    {
       .type     = PT_TIME,
       .id       = "start",
       .name     = N_("Start Time"),
@@ -2123,11 +2590,20 @@ const idclass_t dvr_entry_class = {
       .opts     = PO_SORTKEY,
     },
     {
-      .type     = PT_INT,
+      .type     = PT_U32,
       .id       = "retention",
-      .name     = N_("Retention"),
+      .name     = N_("DVR Log Retention (days)"),
       .off      = offsetof(dvr_entry_t, de_retention),
       .set      = dvr_entry_class_retention_set,
+      .opts     = PO_HIDDEN
+    },
+    {
+      .type     = PT_U32,
+      .id       = "removal",
+      .name     = N_("File removal (days)"),
+      .off      = offsetof(dvr_entry_t, de_removal),
+      .set      = dvr_entry_class_removal_set,
+      .opts     = PO_HIDDEN
     },
     {
       .type     = PT_INT,
@@ -2154,6 +2630,7 @@ const idclass_t dvr_entry_class = {
       .id       = "owner",
       .name     = N_("Owner"),
       .off      = offsetof(dvr_entry_t, de_owner),
+      .list     = user_get_userlist,
       .get_opts = dvr_entry_class_owner_opts,
     },
     {
@@ -2209,7 +2686,15 @@ const idclass_t dvr_entry_class = {
       .type     = PT_BOOL,
       .id       = "noresched",
       .name     = N_("Don't Reschedule"),
-      .off      = offsetof(dvr_entry_t, de_dont_reschedule)
+      .off      = offsetof(dvr_entry_t, de_dont_reschedule),
+      .opts     = PO_HIDDEN,
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "norerecord",
+      .name     = N_("Don't re-record"),
+      .off      = offsetof(dvr_entry_t, de_dont_rerecord),
+      .opts     = PO_HIDDEN,
     },
     {
       .type     = PT_STR,
@@ -2221,10 +2706,40 @@ const idclass_t dvr_entry_class = {
     },
     {
       .type     = PT_STR,
+      .id       = "autorec_caption",
+      .name     = N_("Auto Record Caption"),
+      .get      = dvr_entry_class_autorec_caption_get,
+      .opts     = PO_RDONLY | PO_NOSAVE | PO_HIDDEN,
+    },
+    {
+      .type     = PT_STR,
       .id       = "timerec",
       .name     = N_("Auto Time Record"),
       .set      = dvr_entry_class_timerec_set,
       .get      = dvr_entry_class_timerec_get,
+      .opts     = PO_RDONLY,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "timerec_caption",
+      .name     = N_("Time Record Caption"),
+      .get      = dvr_entry_class_timerec_caption_get,
+      .opts     = PO_RDONLY | PO_NOSAVE | PO_HIDDEN,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "parent",
+      .name     = N_("Parent Entry"),
+      .set      = dvr_entry_class_parent_set,
+      .get      = dvr_entry_class_parent_get,
+      .opts     = PO_RDONLY,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "child",
+      .name     = N_("Slave Entry"),
+      .set      = dvr_entry_class_child_set,
+      .get      = dvr_entry_class_child_get,
       .opts     = PO_RDONLY,
     },
     {
@@ -2372,12 +2887,11 @@ dvr_val2pri(dvr_prio_t v)
   return val2str(v, priotab) ?: "invalid";
 }
 
-
 /**
  *
  */
 void
-dvr_entry_delete(dvr_entry_t *de)
+dvr_entry_delete(dvr_entry_t *de, int no_missed_time_resched)
 {
   dvr_config_t *cfg = de->de_config;
   htsmsg_t *m;
@@ -2394,11 +2908,12 @@ dvr_entry_delete(dvr_entry_t *de)
     *tbuf = 0;
 
   tvhlog(LOG_INFO, "dvr", "delete entry %s \"%s\" on \"%s\" start time %s, "
-	 "scheduled for recording by \"%s\", retention %d days",
-         idnode_uuid_as_str(&de->de_id),
+	 "scheduled for recording by \"%s\", retention %d days, removal %d days",
+         idnode_uuid_as_sstr(&de->de_id),
 	 lang_str_get(de->de_title, NULL), DVR_CH_NAME(de), tbuf,
 	 de->de_creator ?: "",
-	 dvr_entry_get_retention(de));
+	 dvr_entry_get_retention_days(de),
+	 dvr_entry_get_removal_days(de));
 
   if(!htsmsg_is_empty(de->de_files)) {
 #if ENABLE_INOTIFY
@@ -2412,13 +2927,38 @@ dvr_entry_delete(dvr_entry_t *de)
       m = htsmsg_field_get_map(f);
       if (m == NULL) continue;
       filename = htsmsg_get_str(m, "filename");
+      if (filename == NULL) continue;
       r = deferred_unlink(filename, rdir);
       if(r && r != -ENOENT)
         tvhlog(LOG_WARNING, "dvr", "Unable to remove file '%s' from disk -- %s",
   	       filename, strerror(-errno));
+      htsmsg_delete_field(m, "filename");
     }
   }
-  dvr_entry_destroy(de, 1);
+  if (no_missed_time_resched)
+    dvr_entry_set_state(de, DVR_MISSED_TIME, DVR_RS_PENDING, de->de_last_error);
+  else
+    dvr_entry_missed_time(de, de->de_last_error);
+}
+
+/**
+ *
+ */
+void
+dvr_entry_set_rerecord(dvr_entry_t *de, int cmd)
+{
+  if (cmd < 0) { /* toggle */
+    if (de->de_parent) return;
+    cmd = de->de_dont_rerecord ? 1 : 0;
+  }
+  if (cmd == 0 && !de->de_dont_rerecord) {
+    de->de_dont_rerecord = 1;
+    if (de->de_child)
+      dvr_entry_cancel_delete(de->de_child, 0);
+  } else {
+    de->de_dont_rerecord = 0;
+    dvr_entry_rerecord(de);
+  }
 }
 
 /**
@@ -2428,58 +2968,69 @@ dvr_entry_t *
 dvr_entry_stop(dvr_entry_t *de)
 {
   if(de->de_sched_state == DVR_RECORDING) {
-    dvr_stop_recording(de, SM_CODE_OK, 1);
+    de->de_dont_reschedule = 1;
+    dvr_stop_recording(de, SM_CODE_OK, 1, 0);
     return de;
   }
 
-  return dvr_entry_cancel(de);
+  return de;
 }
 
 /**
  *
  */
 dvr_entry_t *
-dvr_entry_cancel(dvr_entry_t *de)
+dvr_entry_cancel(dvr_entry_t *de, int rerecord)
 {
-  switch(de->de_sched_state) {
-  case DVR_SCHEDULED:
-    dvr_entry_destroy(de, 1);
-    return NULL;
+  dvr_entry_t *parent = de->de_parent;
 
+  switch(de->de_sched_state) {
   case DVR_RECORDING:
     de->de_dont_reschedule = 1;
-    dvr_stop_recording(de, SM_CODE_ABORTED, 1);
-    return de;
+    dvr_stop_recording(de, SM_CODE_ABORTED, 1, 0);
+    break;
 
+  case DVR_SCHEDULED:
   case DVR_COMPLETED:
   case DVR_MISSED_TIME:
   case DVR_NOSTATE:
     dvr_entry_destroy(de, 1);
-    return NULL;
+    de = NULL;
+    break;
 
   default:
     abort();
   }
+
+  if (parent) {
+    if (!rerecord)
+      dvr_entry_dont_rerecord(parent, 1);
+    else
+      dvr_entry_rerecord(parent);
+  }
+
+  return de;
 }
 
 /**
  *
  */
 void
-dvr_entry_cancel_delete(dvr_entry_t *de)
+dvr_entry_cancel_delete(dvr_entry_t *de, int rerecord)
 {
+  dvr_entry_t *parent = de->de_parent;
+  dvr_autorec_entry_t *dae = de->de_autorec;
+
   switch(de->de_sched_state) {
-  case DVR_SCHEDULED:
+  case DVR_RECORDING:
+    de->de_dont_reschedule = 1;
+    dvr_stop_recording(de, SM_CODE_ABORTED, 1, 0);
+  case DVR_COMPLETED:
+    dvr_entry_delete(de, 1);
     dvr_entry_destroy(de, 1);
     break;
 
-  case DVR_RECORDING:
-    de->de_dont_reschedule = 1;
-    dvr_stop_recording(de, SM_CODE_ABORTED, 1);
-  case DVR_COMPLETED:
-    dvr_entry_delete(de);
-    break;
-
+  case DVR_SCHEDULED:
   case DVR_MISSED_TIME:
   case DVR_NOSTATE:
     dvr_entry_destroy(de, 1);
@@ -2488,6 +3039,18 @@ dvr_entry_cancel_delete(dvr_entry_t *de)
   default:
     abort();
   }
+
+  if (parent) {
+    if (!rerecord)
+      dvr_entry_dont_rerecord(parent, 1);
+    else
+      dvr_entry_rerecord(parent);
+  }
+
+  // Trigger autorec update in case of max sched count limit
+  if (dae && dae->dae_max_sched_count > 0)
+    dvr_autorec_changed(dae, 0);
+
 }
 
 /**
@@ -2496,16 +3059,45 @@ dvr_entry_cancel_delete(dvr_entry_t *de)
 void
 dvr_entry_init(void)
 {
-  htsmsg_t *l, *c;
+  htsmsg_t *l, *c, *rere;
   htsmsg_field_t *f;
+  const char *parent, *child;
+  dvr_entry_t *de1, *de2;
 
+  dvr_in_init = 1;
+  rere = htsmsg_create_map();
+  /* load config, but remove parent/child fields */
   if((l = hts_settings_load("dvr/log")) != NULL) {
     HTSMSG_FOREACH(f, l) {
       if((c = htsmsg_get_map_by_field(f)) == NULL)
 	continue;
-      (void)dvr_entry_create(f->hmf_name, c);
+      parent = htsmsg_get_str(c, "parent");
+      child = htsmsg_get_str(c, "child");
+      if (parent && parent[0])
+        htsmsg_set_str(rere, parent, f->hmf_name);
+      if (child && child[0])
+        htsmsg_set_str(rere, f->hmf_name, child);
+      htsmsg_delete_field(c, "parent");
+      htsmsg_delete_field(c, "child");
+      (void)dvr_entry_create(f->hmf_name, c, 0);
     }
     htsmsg_destroy(l);
+  }
+  dvr_in_init = 0;
+  /* process parent/child mapping */
+  HTSMSG_FOREACH(f, rere) {
+    if((child = htsmsg_field_get_str(f)) == NULL)
+      continue;
+    parent = f->hmf_name;
+    de1 = dvr_entry_find_by_uuid(parent);
+    de2 = dvr_entry_find_by_uuid(child);
+    dvr_entry_change_parent_child(de1, de2, NULL, 0);
+  }
+  htsmsg_destroy(rere);
+  /* update the entry timers, call rerecord */
+  for (de1 = LIST_FIRST(&dvrentries); de1; de1 = de2) {
+    de2 = LIST_NEXT(de1, de_global_link);
+    dvr_entry_set_timer(de1);
   }
 }
 

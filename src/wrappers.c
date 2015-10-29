@@ -16,6 +16,33 @@
 #include <pthread_np.h>
 #endif
 
+#if ENABLE_ANDROID
+int
+pthread_mutex_timedlock
+  ( pthread_mutex_t *mutex, struct timespec *timeout )
+{
+  struct timeval timenow;
+  struct timespec sleepytime;
+  int retcode;
+
+  /* This is just to avoid a completely busy wait */
+  sleepytime.tv_sec = 0;
+  sleepytime.tv_nsec = 10000000; /* 10ms */
+
+  while ((retcode = pthread_mutex_trylock (mutex)) == EBUSY) {
+    gettimeofday (&timenow, NULL);
+
+    if (timenow.tv_sec >= timeout->tv_sec &&
+       (timenow.tv_usec * 1000) >= timeout->tv_nsec)
+      return ETIMEDOUT;
+
+    nanosleep (&sleepytime, NULL);
+  }
+
+  return retcode;
+}
+#endif
+
 int
 tvh_open(const char *pathname, int flags, mode_t mode)
 {
@@ -82,6 +109,7 @@ tvh_write(int fd, const void *buf, size_t len)
         if (dispatch_clock > next)
           break;
         usleep(100);
+        dispatch_clock_update(NULL);
         continue;
       }
       break;
@@ -153,13 +181,14 @@ thread_wrapper ( void *p )
 }
 
 int
-tvhthread_create0
+tvhthread_create
   (pthread_t *thread, const pthread_attr_t *attr,
    void *(*start_routine) (void *), void *arg, const char *name)
 {
   int r;
   struct thread_state *ts = calloc(1, sizeof(struct thread_state));
-  strncpy(ts->name, name, sizeof(ts->name));
+  strncpy(ts->name, "tvh:", 4);
+  strncpy(ts->name+4, name, sizeof(ts->name)-4);
   ts->name[sizeof(ts->name)-1] = '\0';
   ts->run  = start_routine;
   ts->arg  = arg;

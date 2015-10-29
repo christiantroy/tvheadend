@@ -35,6 +35,8 @@ extern struct th_subscription_list subscriptions;
 #define SUBSCRIPTION_ONESHOT    0x080
 #define SUBSCRIPTION_TABLES     0x100
 #define SUBSCRIPTION_MINIMAL    0x200
+#define SUBSCRIPTION_NODESCR    0x400 ///< no decramble
+#define SUBSCRIPTION_EMM        0x800 ///< add EMM PIDs for no descramble subscription
 #define SUBSCRIPTION_INITSCAN  0x1000 ///< for mux subscriptions
 #define SUBSCRIPTION_IDLESCAN  0x2000 ///< for mux subscriptions
 #define SUBSCRIPTION_USERSCAN  0x4000 ///< for mux subscriptions
@@ -86,8 +88,12 @@ typedef struct th_subscription {
   char *ths_title; /* display title */
   time_t ths_start;  /* time when subscription started */
   int ths_total_err; /* total errors during entire subscription */
-  int ths_bytes_in;   // Reset every second to get aprox. bandwidth (in)
-  int ths_bytes_out; // Reset every second to get approx bandwidth (out)
+  uint64_t ths_total_bytes_in; /* total bytes since the subscription started */
+  uint64_t ths_total_bytes_out; /* total bytes since the subscription started */
+  uint64_t ths_total_bytes_in_prev; /* total bytes since the subscription started, minus 1 second */
+  uint64_t ths_total_bytes_out_prev; /* total bytes since the subscription started, minus 1 second */
+  int ths_bytes_in_avg; /* Average bytes in per second */
+  int ths_bytes_out_avg; /* Average bytes out per second */
 
   streaming_target_t ths_input;
 
@@ -201,11 +207,14 @@ void subscription_unlink_service(th_subscription_t *s, int reason);
 
 void subscription_dummy_join(const char *id, int first);
 
+void subscription_add_bytes_in(th_subscription_t *s, size_t in);
+
+void subscription_add_bytes_out(th_subscription_t *s, size_t out);
 
 static inline int subscriptions_active(void)
   { return LIST_FIRST(&subscriptions) != NULL; }
 
 struct htsmsg;
-struct htsmsg *subscription_create_msg(th_subscription_t *s);
+struct htsmsg *subscription_create_msg(th_subscription_t *s, const char *lang);
 
 #endif /* SUBSCRIPTIONS_H */

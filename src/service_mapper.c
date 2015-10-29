@@ -51,7 +51,7 @@ service_mapper_init ( void )
 {
   TAILQ_INIT(&service_mapper_queue);
   pthread_cond_init(&service_mapper_cond, NULL);
-  tvhthread_create(&service_mapper_tid, NULL, service_mapper_thread, NULL);
+  tvhthread_create(&service_mapper_tid, NULL, service_mapper_thread, NULL, "svcmap");
 }
 
 void
@@ -91,7 +91,7 @@ service_mapper_start ( const service_mapper_conf_t *conf, htsmsg_t *uuids )
     if (uuids) {
       htsmsg_field_t *f;
       const char *str;
-      const char *uuid = idnode_uuid_as_str(&s->s_id);
+      const char *uuid = idnode_uuid_as_sstr(&s->s_id);
       HTSMSG_FOREACH(f, uuids) {
         if (!(str = htsmsg_field_get_str(f))) continue;
         if (!strcmp(str, uuid)) break;
@@ -99,7 +99,7 @@ service_mapper_start ( const service_mapper_conf_t *conf, htsmsg_t *uuids )
       if (!f) continue;
     }
     tvhtrace("service_mapper", "check service %s (%s)",
-             s->s_nicename, idnode_uuid_as_str(&s->s_id));
+             s->s_nicename, idnode_uuid_as_sstr(&s->s_id));
 
     /* Already mapped (or in progress) */
     if (s->s_sm_onqueue) continue;
@@ -188,10 +188,9 @@ service_mapper_link ( service_t *s, channel_t *c, void *origin )
 
   ilm = idnode_list_link(&s->s_id, &s->s_channels,
                          &c->ch_id, &c->ch_services,
-                         origin);
+                         origin, 2);
   if (ilm) {
     service_mapped(s);
-    ilm->ilm_in2_save = 1; /* channel */
     return 1;
   }
   return 0;

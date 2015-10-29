@@ -75,7 +75,7 @@ dvr_timerec_purge_spawn(dvr_timerec_entry_t *dte, int delconf)
     de->de_timerec = NULL;
     if (delconf) {
       if (de->de_sched_state == DVR_SCHEDULED)
-        dvr_entry_cancel(de);
+        dvr_entry_cancel(de, 0);
       else
         dvr_entry_save(de);
     }
@@ -109,6 +109,7 @@ dvr_timerec_check(dvr_timerec_entry_t *dte)
   struct tm tm_start, tm_stop;
   const char *title;
   char buf[200];
+  char ubuf[UUID_HEX_SIZE];
 
   if(dte->dte_enabled == 0 || dte->dte_weekdays == 0)
     goto fail;
@@ -153,12 +154,12 @@ dvr_timerec_check(dvr_timerec_entry_t *dte)
   snprintf(buf, sizeof(buf), _("Time recording%s%s"),
            dte->dte_comment ? ": " : "",
            dte->dte_comment ?: "");
-  de = dvr_entry_create_(idnode_uuid_as_str(&dte->dte_config->dvr_id),
+  de = dvr_entry_create_(1, idnode_uuid_as_str(&dte->dte_config->dvr_id, ubuf),
                          NULL, dte->dte_channel,
                          start, stop, 0, 0, title, NULL,
                          NULL, NULL, NULL, dte->dte_owner, dte->dte_creator,
                          NULL, dte, dte->dte_pri, dte->dte_retention,
-                         buf);
+                         dte->dte_removal, buf);
 
   return;
 
@@ -203,7 +204,7 @@ dvr_timerec_create(const char *uuid, htsmsg_t *conf)
 dvr_timerec_entry_t*
 dvr_timerec_create_htsp(const char *dvr_config_name, const char *title,
                             channel_t *ch, uint32_t enabled, uint32_t start, uint32_t stop,
-                            uint32_t weekdays, dvr_prio_t pri, int retention,
+                            uint32_t weekdays, dvr_prio_t pri, int retention, int removal,
                             const char *owner, const char *creator, const char *comment, 
                             const char *name, const char *directory)
 {
@@ -215,6 +216,7 @@ dvr_timerec_create_htsp(const char *dvr_config_name, const char *title,
 
   htsmsg_add_u32(conf, "enabled",     enabled > 0 ? 1 : 0);
   htsmsg_add_u32(conf, "retention",   retention);
+  htsmsg_add_u32(conf, "removal",     removal);
   htsmsg_add_u32(conf, "pri",         pri);
   htsmsg_add_str(conf, "title",       title);
   htsmsg_add_str(conf, "config_name", dvr_config_name ?: "");
@@ -227,7 +229,7 @@ dvr_timerec_create_htsp(const char *dvr_config_name, const char *title,
   htsmsg_add_u32(conf, "stop",        stop);
 
   if (ch)
-    htsmsg_add_str(conf, "channel", idnode_uuid_as_str(&ch->ch_id));
+    htsmsg_add_str(conf, "channel", idnode_uuid_as_sstr(&ch->ch_id));
 
   int i;
   for (i = 0; i < 7; i++)
@@ -257,7 +259,7 @@ timerec_entry_destroy(dvr_timerec_entry_t *dte, int delconf)
   dvr_timerec_purge_spawn(dte, delconf);
 
   if (delconf)
-    hts_settings_remove("dvr/timerec/%s", idnode_uuid_as_str(&dte->dte_id));
+    hts_settings_remove("dvr/timerec/%s", idnode_uuid_as_sstr(&dte->dte_id));
 
   htsp_timerec_entry_delete(dte);
 
@@ -291,7 +293,7 @@ dvr_timerec_save(dvr_timerec_entry_t *dte)
   lock_assert(&global_lock);
 
   idnode_save(&dte->dte_id, m);
-  hts_settings_save(m, "dvr/timerec/%s", idnode_uuid_as_str(&dte->dte_id));
+  hts_settings_save(m, "dvr/timerec/%s", idnode_uuid_as_sstr(&dte->dte_id));
   htsmsg_destroy(m);
 }
 
@@ -368,7 +370,7 @@ dvr_timerec_entry_class_channel_get(void *o)
   static const char *ret;
   dvr_timerec_entry_t *dte = (dvr_timerec_entry_t *)o;
   if (dte->dte_channel)
-    ret = idnode_uuid_as_str(&dte->dte_channel->ch_id);
+    ret = idnode_uuid_as_sstr(&dte->dte_channel->ch_id);
   else
     ret = "";
   return &ret;
@@ -428,7 +430,7 @@ dvr_timerec_entry_class_time_get(void *o, int tm)
   if (tm >= 0)
     snprintf(buf, sizeof(buf), "%02d:%02d", tm / 60, tm % 60);
   else
-    strcpy(buf, "Any");
+    strncpy(buf, N_("Any"), 16);
   ret = buf;
   return &ret;
 }
@@ -479,7 +481,7 @@ dvr_timerec_entry_class_config_name_get(void *o)
   static const char *buf;
   dvr_timerec_entry_t *dte = (dvr_timerec_entry_t *)o;
   if (dte->dte_config)
-    buf = idnode_uuid_as_str(&dte->dte_config->dvr_id);
+    buf = idnode_uuid_as_sstr(&dte->dte_config->dvr_id);
   else
     buf = "";
   return &buf;
@@ -626,10 +628,16 @@ const idclass_t dvr_timerec_entry_class = {
       .opts     = PO_SORTKEY,
     },
     {
-      .type     = PT_INT,
+      .type     = PT_U32,
       .id       = "retention",
-      .name     = N_("Retention"),
+      .name     = N_("DVR Log Retention (days)"),
       .off      = offsetof(dvr_timerec_entry_t, dte_retention),
+    },
+    {
+      .type     = PT_U32,
+      .id       = "removal",
+      .name     = N_("File removal (days)"),
+      .off      = offsetof(dvr_timerec_entry_t, dte_removal),
     },
     {
       .type     = PT_STR,
@@ -767,10 +775,21 @@ timerec_destroy_by_config(dvr_config_t *kcfg, int delconf)
 /**
  *
  */
-int
-dvr_timerec_get_retention( dvr_timerec_entry_t *dte )
+uint32_t
+dvr_timerec_get_retention_days( dvr_timerec_entry_t *dte )
 {
   if (dte->dte_retention > 0)
     return dte->dte_retention;
-  return dte->dte_config->dvr_retention_days;
+  return dvr_retention_cleanup(dte->dte_config->dvr_retention_days);
+}
+
+/**
+ *
+ */
+uint32_t
+dvr_timerec_get_removal_days( dvr_timerec_entry_t *dte )
+{
+  if (dte->dte_removal > 0)
+    return dte->dte_removal;
+  return dvr_retention_cleanup(dte->dte_config->dvr_removal_days);
 }

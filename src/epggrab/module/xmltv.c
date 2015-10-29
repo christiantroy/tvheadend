@@ -43,16 +43,6 @@
 #define XMLTV_FIND "tv_find_grabbers"
 #define XMLTV_GRAB "tv_grab_"
 
-static epggrab_channel_tree_t _xmltv_channels;
-static epggrab_module_t      *_xmltv_module;
-
-static epggrab_channel_t *_xmltv_channel_find
-  ( const char *id, int create, int *save )
-{
-  return epggrab_channel_find(&_xmltv_channels, id, create, save,
-                              _xmltv_module);
-}
-
 /* **************************************************************************
  * Parsing
  * *************************************************************************/
@@ -72,13 +62,15 @@ static time_t _xmltv_str2time(const char *in)
   str[sizeof(str)-1] = '\0';
 
   /* split tz */
-  while (str[sp] && str[sp] != ' ')
+  while (str[sp] && str[sp] != ' ' && str[sp] != '+' && str[sp] != '-')
+    sp++;
+  if (str[sp] == ' ')
     sp++;
 
   /* parse tz */
   // TODO: handle string TZ?
   if (str[sp]) {
-    sscanf(str+sp+1, "%d", &tz);
+    sscanf(str+sp, "%d", &tz);
     tz = (tz % 100) + (tz / 100) * 3600; // Convert from HHMM to seconds
     str[sp] = 0;
   }
@@ -455,7 +447,8 @@ _xmltv_parse_lang_str ( lang_str_t **ls, htsmsg_t *tags, const char *tname )
  */
 static int _xmltv_parse_programme_tags
   (epggrab_module_t *mod, channel_t *ch, htsmsg_t *tags, 
-   time_t start, time_t stop, epggrab_stats_t *stats)
+   time_t start, time_t stop, const char *icon,
+   epggrab_stats_t *stats)
 {
   int save = 0, save2 = 0, save3 = 0;
   epg_episode_t *ee = NULL;
@@ -549,6 +542,9 @@ static int _xmltv_parse_programme_tags
     save3 |= _xmltv_parse_star_rating(mod, ee, tags);
 
     save3 |= _xmltv_parse_age_rating(mod, ee, tags);
+
+    if (icon)
+      save3 |= epg_episode_set_image(ee, icon, mod);
   }
 
   /* Stats */
@@ -570,30 +566,43 @@ static int _xmltv_parse_programme_tags
 static int _xmltv_parse_programme
   (epggrab_module_t *mod, htsmsg_t *body, epggrab_stats_t *stats)
 {
-  int save = 0;
-  htsmsg_t *attribs, *tags;
-  const char *s, *chid;
+  int chsave = 0, save = 0;
+  htsmsg_t *attribs, *tags, *subtag;
+  const char *s, *chid, *icon = NULL;
   time_t start, stop;
-  epggrab_channel_t *ch;
-  epggrab_channel_link_t *ecl;
+  channel_t *ch;
+  epggrab_channel_t *ec;
+  idnode_list_mapping_t *ilm;
 
   if(body == NULL) return 0;
 
   if((attribs = htsmsg_get_map(body,    "attrib"))  == NULL) return 0;
   if((tags    = htsmsg_get_map(body,    "tags"))    == NULL) return 0;
   if((chid    = htsmsg_get_str(attribs, "channel")) == NULL) return 0;
-  if((ch      = _xmltv_channel_find(chid, 0, NULL))   == NULL) return 0;
-  if (!LIST_FIRST(&ch->channels)) return 0;
+  if((ec      = epggrab_channel_find(mod, chid, 1, &chsave)) == NULL) return 0;
+  if (chsave) {
+    stats->channels.created++;
+    stats->channels.modified++;
+  }
+  if (!LIST_FIRST(&ec->channels)) return 0;
   if((s       = htsmsg_get_str(attribs, "start"))   == NULL) return 0;
   start = _xmltv_str2time(s);
   if((s       = htsmsg_get_str(attribs, "stop"))    == NULL) return 0;
   stop  = _xmltv_str2time(s);
 
+  if((subtag  = htsmsg_get_map(tags,    "icon"))   != NULL &&
+     (attribs = htsmsg_get_map(subtag,  "attrib")) != NULL)
+    icon = htsmsg_get_str(attribs, "src");
+
   if(stop <= start || stop <= dispatch_clock) return 0;
 
-  LIST_FOREACH(ecl, &ch->channels, ecl_epg_link)
-    save |= _xmltv_parse_programme_tags(mod, ecl->ecl_channel, tags,
-                                        start, stop, stats);
+  ec->laststamp = dispatch_clock;
+  LIST_FOREACH(ilm, &ec->channels, ilm_in2_link) {
+    ch = (channel_t *)ilm->ilm_in2;
+    if (!ch->ch_enabled || ch->ch_epg_parent) continue;
+    save |= _xmltv_parse_programme_tags(mod, ch, tags,
+                                        start, stop, icon, stats);
+  }
   return save;
 }
 
@@ -613,7 +622,8 @@ static int _xmltv_parse_channel
   if((attribs = htsmsg_get_map(body, "attrib"))  == NULL) return 0;
   if((id      = htsmsg_get_str(attribs, "id"))   == NULL) return 0;
   if((tags    = htsmsg_get_map(body, "tags"))    == NULL) return 0;
-  if((ch      = _xmltv_channel_find(id, 1, &save)) == NULL) return 0;
+  if((ch      = epggrab_channel_find(mod, id, 1, &save)) == NULL) return 0;
+  ch->laststamp = dispatch_clock;
   stats->channels.total++;
   if (save) stats->channels.created++;
   
@@ -626,10 +636,8 @@ static int _xmltv_parse_channel
      (icon    = htsmsg_get_str(attribs, "src"))    != NULL) {
     save |= epggrab_channel_set_icon(ch, icon);
   }
-  if (save) {
-    epggrab_channel_updated(ch);
+  if (save)
     stats->channels.modified++;
-  }
   return save;
 }
 
@@ -639,21 +647,37 @@ static int _xmltv_parse_channel
 static int _xmltv_parse_tv
   (epggrab_module_t *mod, htsmsg_t *body, epggrab_stats_t *stats)
 {
-  int save = 0;
+  int gsave = 0, save;
   htsmsg_t *tags;
   htsmsg_field_t *f;
 
   if((tags = htsmsg_get_map(body, "tags")) == NULL)
     return 0;
 
+  pthread_mutex_lock(&global_lock);
+  epggrab_channel_begin_scan(mod);
+  pthread_mutex_unlock(&global_lock);
+
   HTSMSG_FOREACH(f, tags) {
+    save = 0;
     if(!strcmp(f->hmf_name, "channel")) {
-      save |= _xmltv_parse_channel(mod, htsmsg_get_map_by_field(f), stats);
+      pthread_mutex_lock(&global_lock);
+      save = _xmltv_parse_channel(mod, htsmsg_get_map_by_field(f), stats);
+      pthread_mutex_unlock(&global_lock);
     } else if(!strcmp(f->hmf_name, "programme")) {
-      save |= _xmltv_parse_programme(mod, htsmsg_get_map_by_field(f), stats);
+      pthread_mutex_lock(&global_lock);
+      save = _xmltv_parse_programme(mod, htsmsg_get_map_by_field(f), stats);
+      if (save) epg_updated();
+      pthread_mutex_unlock(&global_lock);
     }
+    gsave |= save;
   }
-  return save;
+
+  pthread_mutex_lock(&global_lock);
+  epggrab_channel_end_scan(mod);
+  pthread_mutex_unlock(&global_lock);
+
+  return gsave;
 }
 
 static int _xmltv_parse
@@ -695,8 +719,9 @@ static void _xmltv_load_grabbers ( void )
       if ( outbuf[i] == '\n' || outbuf[i] == '\0' ) {
         outbuf[i] = '\0';
         sprintf(name, "XMLTV: %s", &outbuf[n]);
-        epggrab_module_int_create(NULL, &outbuf[p], name, 3, &outbuf[p],
-                                  NULL, _xmltv_parse, NULL, NULL);
+        epggrab_module_int_create(NULL, NULL, &outbuf[p], "xmltv",
+                                  name, 3, &outbuf[p],
+                                  NULL, _xmltv_parse, NULL);
         p = n = i + 1;
       } else if ( outbuf[i] == '\\') {
         memmove(outbuf, outbuf + 1, strlen(outbuf));
@@ -729,6 +754,7 @@ static void _xmltv_load_grabbers ( void )
       if ((dir = opendir(tmp))) {
         while ((de = readdir(dir))) {
           if (strstr(de->d_name, XMLTV_GRAB) != de->d_name) continue;
+          if (de->d_name[0] && de->d_name[strlen(de->d_name)-1] == '~') continue;
           snprintf(bin, sizeof(bin), "%s/%s", tmp, de->d_name);
           if (epggrab_module_find_by_id(bin)) continue;
           if (stat(bin, &st)) continue;
@@ -740,8 +766,8 @@ static void _xmltv_load_grabbers ( void )
             close(rd);
             if (outbuf[outlen-1] == '\n') outbuf[outlen-1] = '\0';
             snprintf(name, sizeof(name), "XMLTV: %s", outbuf);
-            epggrab_module_int_create(NULL, bin, name, 3, bin,
-                                      NULL, _xmltv_parse, NULL, NULL);
+            epggrab_module_int_create(NULL, NULL, bin, "xmltv", name, 3, bin,
+                                      NULL, _xmltv_parse, NULL);
             free(outbuf);
           } else {
             if (rd >= 0)
@@ -758,13 +784,10 @@ static void _xmltv_load_grabbers ( void )
 
 void xmltv_init ( void )
 {
-  RB_INIT(&_xmltv_channels);
-
   /* External module */
-  _xmltv_module = (epggrab_module_t*)
-    epggrab_module_ext_create(NULL, "xmltv", "XMLTV", 3, "xmltv",
-                              _xmltv_parse, NULL,
-                              &_xmltv_channels);
+  epggrab_module_ext_create(NULL, "xmltv", "xmltv",
+                            "XMLTV", 3, "xmltv",
+                            _xmltv_parse, NULL);
 
   /* Standard modules */
   _xmltv_load_grabbers();
@@ -772,10 +795,9 @@ void xmltv_init ( void )
 
 void xmltv_done ( void )
 {
-  epggrab_channel_flush(&_xmltv_channels, 0);
 }
 
 void xmltv_load ( void )
 {
-  epggrab_module_channels_load(epggrab_module_find_by_id("xmltv"));
+  epggrab_module_channels_load("xmltv");
 }
