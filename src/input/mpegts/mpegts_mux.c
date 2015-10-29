@@ -27,6 +27,10 @@
 #include "profile.h"
 #include "dvb_charset.h"
 
+#if ENABLE_ANDROID
+#include "../../wrappers.h"
+#endif
+
 #include <assert.h>
 
 static void mpegts_mux_scan_timeout ( void *p );
@@ -1260,33 +1264,6 @@ mpegts_mux_unsubscribe_by_name
     s = n;
   }
 }
-
-#if ENABLE_ANDROID
-int
-pthread_mutex_timedlock (pthread_mutex_t *mutex, struct timespec *timeout)
-{
- struct timeval timenow;
- struct timespec sleepytime;
- int retcode;
- 
- /* This is just to avoid a completely busy wait */
- sleepytime.tv_sec = 0;
- sleepytime.tv_nsec = 10000000; /* 10ms */
- 
- while ((retcode = pthread_mutex_trylock (mutex)) == EBUSY) {
-  gettimeofday (&timenow, NULL);
-  
-  if (timenow.tv_sec >= timeout->tv_sec &&
-      (timenow.tv_usec * 1000) >= timeout->tv_nsec) {
-   return ETIMEDOUT;
-  }
-  
-  nanosleep (&sleepytime, NULL);
- }
- 
- return retcode;
-}
-#endif
 
 th_subscription_t *
 mpegts_mux_find_subscription_by_name

@@ -135,7 +135,11 @@ iptv_auto_network_process_m3u_item(iptv_network_t *in,
 
   if (strncmp(url, "http://", 7) == 0 ||
       strncmp(url, "https://", 8) == 0) {
+#if ENABLE_ANDROID
+    url = n = strdup(url);
+#else
     url = n = strdupa(url);
+#endif
     while (*n && *n != ' ' && *n != '|') n++;
     if (*n) { *n = '\0'; n++; }
     l = 0;

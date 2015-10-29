@@ -17,6 +17,10 @@
 #endif
 
 #if ENABLE_ANDROID
+#include "wrappers.h"
+#endif
+
+#if ENABLE_ANDROID
 int
 pthread_mutex_timedlock
   ( pthread_mutex_t *mutex, struct timespec *timeout )

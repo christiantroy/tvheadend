@@ -832,10 +832,6 @@ void mpegts_mux_delete ( mpegts_mux_t *mm, int delconf );
 
 void mpegts_mux_save ( mpegts_mux_t *mm, htsmsg_t *c );
 
-#if ENABLE_ANDROID
-int pthread_mutex_timedlock(pthread_mutex_t *mutex, struct timespec *timeout);
-#endif
-
 void mpegts_mux_tuning_error( const char *mux_uuid, mpegts_mux_instance_t *mmi_match );
 
 mpegts_mux_instance_t *mpegts_mux_instance_create0

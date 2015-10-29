@@ -1160,7 +1160,11 @@ http_client_add_args ( http_client_t *hc, http_arg_list_t *h, const char *args )
 
   if (args == NULL)
     return;
+#if ENABLE_ANDROID
+  p = strdup(args);
+#else
   p = strdupa(args);
+#endif
   while (*p) {
     while (*p && *p <= ' ') p++;
     if (*p == '\0') break;
