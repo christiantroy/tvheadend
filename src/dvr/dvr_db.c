@@ -111,6 +111,7 @@ dvr_entry_assign_broadcast(dvr_entry_t *de, epg_broadcast_t *bcast)
       de->de_bcast->putref((epg_object_t*)de->de_bcast);
       notify_delayed(id, "epg", "dvr_delete");
       de->de_bcast = NULL;
+      de->de_dvb_eid = 0;
     }
     if (bcast) {
       bcast->getref((epg_object_t*)bcast);
@@ -203,20 +204,20 @@ static inline int extra_valid(time_t extra)
   return extra != 0 && extra != (time_t)-1;
 }
 
-int
+time_t
 dvr_entry_get_start_time( dvr_entry_t *de )
 {
   /* Note 30 seconds might not be enough (rotors) */
   return de->de_start - (60 * dvr_entry_get_extra_time_pre(de)) - 30;
 }
 
-int
+time_t
 dvr_entry_get_stop_time( dvr_entry_t *de )
 {
   return de->de_stop + (60 * dvr_entry_get_extra_time_post(de));
 }
 
-int
+time_t
 dvr_entry_get_extra_time_pre( dvr_entry_t *de )
 {
   time_t extra = de->de_start_extra;
@@ -232,7 +233,7 @@ dvr_entry_get_extra_time_pre( dvr_entry_t *de )
   return extra;
 }
 
-int
+time_t
 dvr_entry_get_extra_time_post( dvr_entry_t *de )
 {
   time_t extra = de->de_stop_extra;
@@ -418,6 +419,8 @@ dvr_entry_status(dvr_entry_t *de)
       return N_("Commercial break");
     case DVR_RS_ERROR:
       return streaming_code2txt(de->de_last_error);
+    case DVR_RS_EPG_WAIT:
+      return N_("Waiting for EPG running flag");
     default:
       return N_("Invalid");
     }
@@ -512,7 +515,7 @@ dvr_usage_count(access_t *aa)
   return used;
 }
 
-static void
+void
 dvr_entry_set_timer(dvr_entry_t *de)
 {
   time_t now, start, stop;
@@ -527,6 +530,12 @@ dvr_entry_set_timer(dvr_entry_t *de)
 
   if (now >= stop || de->de_dont_reschedule) {
 
+    /* EPG thinks that the program is running */
+    if(de->de_running_start > de->de_running_stop) {
+      stop = dispatch_clock + 10;
+      goto recording;
+    }
+
     if(htsmsg_is_empty(de->de_files))
       dvr_entry_missed_time(de, de->de_last_error);
     else
@@ -537,6 +546,7 @@ dvr_entry_set_timer(dvr_entry_t *de)
 
   } else if (de->de_sched_state == DVR_RECORDING)  {
 
+recording:
     gtimer_arm_abs(&de->de_timer, dvr_timer_stop_recording, de, stop);
 
   } else if (de->de_channel && de->de_channel->ch_enabled) {
@@ -582,6 +592,12 @@ dvr_entry_fuzzy_match(dvr_entry_t *de, epg_broadcast_t *e, uint16_t eid, int64_t
   const char *title1, *title2;
   char buf[64];
 
+  /* Wrong length (+/-20%) */
+  t1 = de->de_stop - de->de_start;
+  t2 = e->stop - e->start;
+  if (abs(t2 - t1) > (t1 / 5))
+    return 0;
+
   /* Matching ID */
   if (de->de_dvb_eid && eid && de->de_dvb_eid == eid)
     return 1;
@@ -590,12 +606,6 @@ dvr_entry_fuzzy_match(dvr_entry_t *de, epg_broadcast_t *e, uint16_t eid, int64_t
   if (!(title1 = epg_broadcast_get_title(e, NULL)))
     return 0;
   if (!(title2 = lang_str_get(de->de_title, NULL)))
-    return 0;
-
-  /* Wrong length (+/-20%) */
-  t1 = de->de_stop - de->de_start;
-  t2 = e->stop - e->start;
-  if ( abs(t2 - t1) > (t1 / 5) )
     return 0;
 
   /* Outside of window */
@@ -1448,7 +1458,7 @@ dvr_event_replaced(epg_broadcast_t *e, epg_broadcast_t *new_e)
   assert(new_e != NULL);
 
   /* Ignore */
-  if ( e == new_e ) return;
+  if (e == new_e) return;
 
   /* Existing entry */
   if ((de = dvr_entry_find_by_event(e))) {
@@ -1472,6 +1482,7 @@ dvr_event_replaced(epg_broadcast_t *e, epg_broadcast_t *new_e)
 
     /* Find match */
     } else {
+
       RB_FOREACH(e, &e->channel->ch_epg_schedule, sched_link) {
         if (dvr_entry_fuzzy_match(de, e, e->dvb_eid,
                                   de->de_config->dvr_update_window)) {
@@ -1481,17 +1492,34 @@ dvr_event_replaced(epg_broadcast_t *e, epg_broadcast_t *new_e)
                    epg_broadcast_get_title(e, NULL),
                    channel_get_name(e->channel),
                    e->start, e->stop);
-          dvr_entry_assign_broadcast(de, e);
-          _dvr_entry_update(de, -1, e, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, 0, DVR_PRIO_NOTSET, 0, 0);
+          _dvr_entry_update(de, -1, e, NULL, NULL, NULL, NULL, NULL,
+                            0, 0, 0, 0, DVR_PRIO_NOTSET, 0, 0);
           return;
         }
       }
       dvr_entry_assign_broadcast(de, NULL);
+
     }
   }
 }
 
-void dvr_event_updated ( epg_broadcast_t *e )
+/**
+ * Used to notify the DVR that an event has been removed
+ */
+void
+dvr_event_removed(epg_broadcast_t *e)
+{
+  dvr_entry_t *de = dvr_entry_find_by_event(e);
+  if (de) {
+    dvr_entry_assign_broadcast(de, NULL);
+    dvr_entry_save(de);
+  }
+}
+
+/**
+ * Event was updated in epg
+ */
+void dvr_event_updated(epg_broadcast_t *e)
 {
   dvr_entry_t *de;
   de = dvr_entry_find_by_event(e);
@@ -1511,10 +1539,83 @@ void dvr_event_updated ( epg_broadcast_t *e )
                  epg_broadcast_get_title(e, NULL),
                  channel_get_name(e->channel),
                  e->start, e->stop);
-        dvr_entry_assign_broadcast(de, e);
         _dvr_entry_update(de, -1, e, NULL, NULL, NULL, NULL, NULL, 0, 0, 0, 0, DVR_PRIO_NOTSET, 0, 0);
         break;
       }
+    }
+  }
+}
+
+/**
+ * Event running status is updated
+ */
+static void dvr_entry_not_running(dvr_entry_t *de,
+                                  const char *srcname,
+                                  const char *srctitle)
+{
+  if (!de->de_running_stop ||
+      de->de_running_start > de->de_running_stop)
+    tvhdebug("dvr", "dvr entry %s %s %s on %s - EPG marking stop",
+             idnode_uuid_as_sstr(&de->de_id), srcname, srctitle,
+             channel_get_name(de->de_channel));
+  de->de_running_stop = dispatch_clock;
+  if (de->de_sched_state == DVR_RECORDING && de->de_running_start) {
+    if (dvr_entry_get_stop_time(de) > dispatch_clock) {
+      de->de_dont_reschedule = 1;
+      dvr_stop_recording(de, SM_CODE_OK, 0, 0);
+      tvhdebug("dvr", "dvr entry %s %s %s on %s - EPG stop",
+             idnode_uuid_as_sstr(&de->de_id), srcname, srctitle,
+             channel_get_name(de->de_channel));
+    }
+  }
+}
+
+/**
+ * Event running status is updated
+ */
+void dvr_event_running(epg_broadcast_t *e, epg_source_t esrc, int running)
+{
+  dvr_entry_t *de, *de2;
+
+  if (esrc != EPG_SOURCE_EIT || e->dvb_eid == 0)
+    return;
+  de = dvr_entry_find_by_event(e);
+  if (de == NULL)
+    return;
+  if (!de->de_channel->ch_epg_running || !de->de_config->dvr_running) {
+    de->de_running_start = de->de_running_stop = 0;
+    return;
+  }
+  if (!running) {
+    dvr_entry_not_running(de, "event", epg_broadcast_get_title(e, NULL));
+    return;
+  }
+  de2 = de;
+  assert(e->channel == de->de_channel);
+  LIST_FOREACH(de, &de->de_channel->ch_dvrs, de_channel_link) {
+    if (de != de2) {
+      if (de->de_dvb_eid == 0)
+        continue;
+      if (de->de_dvb_eid == e->dvb_eid)
+        goto running;
+      dvr_entry_not_running(de, "other running event",
+                            epg_broadcast_get_title(e, NULL));
+      continue;
+    }
+running:
+    if (!de->de_running_start)
+      tvhdebug("dvr", "dvr entry %s event %s on %s - EPG marking start",
+               idnode_uuid_as_sstr(&de->de_id),
+               epg_broadcast_get_title(e, NULL),
+               channel_get_name(e->channel));
+    de->de_running_start = dispatch_clock;
+    if (dvr_entry_get_start_time(de) > dispatch_clock) {
+      de->de_start = dispatch_clock;
+      dvr_entry_set_timer(de);
+      tvhdebug("dvr", "dvr entry %s event %s on %s - EPG start",
+               idnode_uuid_as_sstr(&de->de_id),
+               epg_broadcast_get_title(e, NULL),
+               channel_get_name(e->channel));
     }
   }
 }
@@ -1564,6 +1665,12 @@ dvr_stop_recording(dvr_entry_t *de, int stopcode, int saveconf, int clone)
 static void
 dvr_timer_stop_recording(void *aux)
 {
+  dvr_entry_t *de = aux;
+  /* EPG thinks that the program is running */
+  if (de->de_running_start > de->de_running_stop) {
+    gtimer_arm(&de->de_timer, dvr_timer_stop_recording, de, 10);
+    return;
+  }
   dvr_stop_recording(aux, SM_CODE_OK, 1, 0);
 }
 

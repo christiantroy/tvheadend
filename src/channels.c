@@ -411,6 +411,13 @@ const idclass_t channel_class = {
       .opts     = PO_ADVANCED
     },
     {
+      .type     = PT_BOOL,
+      .id       = "epg_running",
+      .name     = N_("Use EPG Running State"),
+      .off      = offsetof(channel_t, ch_epg_running),
+      .opts     = PO_ADVANCED
+    },
+    {
       .type     = PT_STR,
       .islist   = 1,
       .id       = "services",
@@ -711,6 +718,11 @@ channel_get_icon ( channel_t *ch )
         if (aname == NULL)
           aname = strdup(chname);
 
+        if (config.chicon_lowercase)
+          for (s = aname; *s; s++)
+            if (*s >= 'A' && *s <= 'Z')
+              *(char *)s = *s - 'A' + 'a';
+
         sname = url_encode(aname);
         free((char *)aname);
       }
@@ -833,6 +845,7 @@ channel_create0
   ch->ch_enabled  = 1;
   ch->ch_autoname = 1;
   ch->ch_epgauto  = 1;
+  ch->ch_epg_running = 1;
 
   if (conf) {
     ch->ch_load = 1;
@@ -924,8 +937,9 @@ channel_delete ( channel_t *ch, int delconf )
 void
 channel_save ( channel_t *ch )
 {
-  htsmsg_t *c = htsmsg_create_map();
+  htsmsg_t *c;
   if (ch->ch_dont_save == 0) {
+    c = htsmsg_create_map();
     idnode_save(&ch->ch_id, c);
     hts_settings_save(c, "channel/config/%s", idnode_uuid_as_sstr(&ch->ch_id));
     htsmsg_destroy(c);

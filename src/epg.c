@@ -1397,12 +1397,16 @@ epg_serieslink_t *epg_serieslink_deserialize
  * *************************************************************************/
 
 static void _epg_channel_rem_broadcast 
-  ( channel_t *ch, epg_broadcast_t *ebc, epg_broadcast_t *new )
+  ( channel_t *ch, epg_broadcast_t *ebc, epg_broadcast_t *ebc_new )
 {
-  if (new) dvr_event_replaced(ebc, new);
   RB_REMOVE(&ch->ch_epg_schedule, ebc, sched_link);
   if (ch->ch_epg_now  == ebc) ch->ch_epg_now  = NULL;
   if (ch->ch_epg_next == ebc) ch->ch_epg_next = NULL;
+  if (ebc_new) {
+    dvr_event_replaced(ebc, ebc_new);
+  } else {
+    dvr_event_removed(ebc);
+  }
   _epg_object_putref(ebc);
 }
 
@@ -1413,8 +1417,14 @@ static void _epg_channel_timer_callback ( void *p )
   channel_t *ch = (channel_t*)p;
 
   /* Clear now/next */
-  if ((cur = ch->ch_epg_now))
+  if ((cur = ch->ch_epg_now)) {
+    if (cur->running) {
+      /* running? don't do anything */
+      gtimer_arm(&ch->ch_epg_timer, _epg_channel_timer_callback, ch, 2);
+      return;
+    }
     cur->getref(cur);
+  }
   if ((nxt = ch->ch_epg_next))
     nxt->getref(nxt);
   ch->ch_epg_now = ch->ch_epg_next = NULL;
@@ -1597,9 +1607,11 @@ static void _epg_broadcast_updated ( void *eo )
     htsp_event_add(eo);
     notify_delayed(id, "epg", "create");
   }
-  dvr_event_updated(eo);
-  dvr_autorec_check_event(eo);
-  channel_event_updated(eo);
+  if (ebc->channel) {
+    dvr_event_updated(eo);
+    dvr_autorec_check_event(eo);
+    channel_event_updated(eo);
+  }
 }
 
 static epg_broadcast_t **_epg_broadcast_skel ( void )
@@ -1670,6 +1682,26 @@ epg_broadcast_t *epg_broadcast_find_by_eid ( channel_t *ch, uint16_t eid )
     if (e->dvb_eid == eid) return e;
   }
   return NULL;
+}
+
+void epg_broadcast_notify_running
+  ( epg_broadcast_t *broadcast, epg_source_t esrc, int running )
+{
+  channel_t *ch;
+  epg_broadcast_t *now;
+
+  broadcast->running = !!running;
+  if (!running) {
+    broadcast->stop = dispatch_clock - 1;
+  } else {
+    ch = broadcast->channel;
+    now = ch ? ch->ch_epg_now : NULL;
+    if (broadcast != now && now) {
+      now->running = 0;
+      dvr_event_running(ch->ch_epg_now, esrc, 0);
+    }
+  }
+  dvr_event_running(broadcast, esrc, running);
 }
 
 int epg_broadcast_set_episode 
