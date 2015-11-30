@@ -19,7 +19,10 @@
 #include <unistd.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
-#include <libswscale/swscale.h>
+#include <libavfilter/avfiltergraph.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
+#include <libavutil/opt.h>
 #include <libavresample/avresample.h>
 #include <libavutil/opt.h>
 #include <libavutil/audio_fifo.h>
@@ -49,6 +52,8 @@ typedef struct transcoder_stream {
   streaming_target_t           *ts_target;
   LIST_ENTRY(transcoder_stream) ts_link;
   int                           ts_first;
+
+  pktbuf_t                     *ts_input_gh;
 
   void (*ts_handle_pkt) (struct transcoder *, struct transcoder_stream *, th_pkt_t *);
   void (*ts_destroy)    (struct transcoder *, struct transcoder_stream *);
@@ -92,8 +97,11 @@ typedef struct video_stream {
   AVCodec                   *vid_ocodec;
 
   AVFrame                   *vid_dec_frame;
-  struct SwsContext         *vid_scaler;
   AVFrame                   *vid_enc_frame;
+
+  AVFilterGraph             *flt_graph;
+  AVFilterContext           *flt_bufsrcctx;
+  AVFilterContext           *flt_bufsinkctx;
 
   int16_t                    vid_width;
   int16_t                    vid_height;
@@ -488,14 +496,14 @@ transcoder_stream_audio(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
 
   if (!avcodec_is_open(ictx)) {
     if (icodec->id == AV_CODEC_ID_AAC || icodec->id == AV_CODEC_ID_VORBIS) {
-      if (pkt->pkt_meta) {
-        ictx->extradata_size = pktbuf_len(pkt->pkt_meta);
+      if (ts->ts_input_gh) {
+        ictx->extradata_size = pktbuf_len(ts->ts_input_gh);
         ictx->extradata = av_malloc(ictx->extradata_size);
         memcpy(ictx->extradata,
-               pktbuf_ptr(pkt->pkt_meta), pktbuf_len(pkt->pkt_meta));
+               pktbuf_ptr(ts->ts_input_gh), pktbuf_len(ts->ts_input_gh));
       } else {
-        /* wait for metadata */
-        return;
+        tvherror("transcode", "%04X: missing meta data for %s",
+                 shortid(t), icodec->id == AV_CODEC_ID_AAC ? "AAC" : "VORBIS");
       }
     }
 
@@ -678,14 +686,14 @@ transcoder_stream_audio(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
       tvhdebug("transcode", "%04X: starting audio resampling", shortid(t));
 
       av_get_channel_layout_string(layout_buf, sizeof (layout_buf), ictx->channels, ictx->channel_layout);
-      tvhdebug("transcode", "%04X: IN : channel_layout=%s, rate=%d, fmt=%s, bitrate=%d",
+      tvhdebug("transcode", "%04X: IN : channel_layout=%s, rate=%d, fmt=%s, bitrate=%"PRId64,
                shortid(t), layout_buf, ictx->sample_rate,
-               av_get_sample_fmt_name(ictx->sample_fmt), ictx->bit_rate);
+               av_get_sample_fmt_name(ictx->sample_fmt), (int64_t)ictx->bit_rate);
 
       av_get_channel_layout_string(layout_buf, sizeof (layout_buf), octx->channels, octx->channel_layout);
-      tvhdebug("transcode", "%04X: OUT: channel_layout=%s, rate=%d, fmt=%s, bitrate=%d",
+      tvhdebug("transcode", "%04X: OUT: channel_layout=%s, rate=%d, fmt=%s, bitrate=%"PRId64,
                shortid(t), layout_buf, octx->sample_rate,
-               av_get_sample_fmt_name(octx->sample_fmt), octx->bit_rate);
+               av_get_sample_fmt_name(octx->sample_fmt), (int64_t)octx->bit_rate);
 
       if (transcode_opt_set_int(t, ts, as->resample_context,
                                 "in_channel_layout", ictx->channel_layout, 1))
@@ -1022,6 +1030,124 @@ send_video_packet(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt,
 
 }
 
+/* create a simple deinterlacer-scaler video filter chain */
+static int
+create_video_filter(video_stream_t *vs, transcoder_t *t,
+                    AVCodecContext *ictx, AVCodecContext *octx)
+{
+  AVFilterInOut *flt_inputs, *flt_outputs;
+  AVFilter *flt_bufsrc, *flt_bufsink;
+  enum AVPixelFormat pix_fmts[] = { 0, AV_PIX_FMT_NONE };
+  char opt[128];
+  int err;
+
+  err = 1;
+  flt_inputs = flt_outputs = NULL;
+  flt_bufsrc = flt_bufsink = NULL;
+
+  if (vs->flt_graph)
+    avfilter_graph_free(&vs->flt_graph);
+
+  vs->flt_graph = avfilter_graph_alloc();
+  if (!vs->flt_graph)
+    return err;
+
+  flt_inputs = avfilter_inout_alloc();
+  if (!flt_inputs)
+    goto out_err;
+
+  flt_outputs = avfilter_inout_alloc();
+  if (!flt_outputs)
+    goto out_err;
+
+  flt_bufsrc = avfilter_get_by_name("buffer");
+  flt_bufsink = avfilter_get_by_name("buffersink");
+  if (!flt_bufsrc || !flt_bufsink) {
+    tvherror("transcode", "%04X: libav default buffers unknown", shortid(t));
+    goto out_err;
+  }
+
+  memset(opt, 0, sizeof(opt));
+  snprintf(opt, sizeof(opt), "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
+           ictx->width,
+           ictx->height,
+           ictx->pix_fmt,
+           ictx->time_base.num,
+           ictx->time_base.den,
+           ictx->sample_aspect_ratio.num,
+           ictx->sample_aspect_ratio.den);
+
+  err = avfilter_graph_create_filter(&vs->flt_bufsrcctx, flt_bufsrc, "in",
+                                     opt, NULL, vs->flt_graph);
+  if (err < 0) {
+    tvherror("transcode", "%04X: fltchain IN init error", shortid(t));
+    goto out_err;
+  }
+
+  err = avfilter_graph_create_filter(&vs->flt_bufsinkctx, flt_bufsink,
+                                     "out", NULL, NULL, vs->flt_graph);
+  if (err < 0) {
+    tvherror("transcode", "%04X: fltchain OUT init error", shortid(t));
+    goto out_err;
+  }
+
+  pix_fmts[0] = octx->pix_fmt;
+  err = av_opt_set_int_list(vs->flt_bufsinkctx, "pix_fmts", pix_fmts,
+                            AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
+  if (err < 0) {
+    tvherror("transcode", "%08X: fltchain cannot set output pixfmt",
+             shortid(t));
+    goto out_err;
+  }
+
+  flt_outputs->name = av_strdup("in");
+  flt_outputs->filter_ctx = vs->flt_bufsrcctx;
+  flt_outputs->pad_idx = 0;
+  flt_outputs->next = NULL;
+  flt_inputs->name = av_strdup("out");
+  flt_inputs->filter_ctx = vs->flt_bufsinkctx;
+  flt_inputs->pad_idx = 0;
+  flt_inputs->next = NULL;
+
+  /* add filters: yadif to deinterlace and a scaler */
+  memset(opt, 0, sizeof(opt));
+  snprintf(opt, sizeof(opt), "yadif,scale=%dx%d",
+           octx->width,
+           octx->height);
+  err = avfilter_graph_parse_ptr(vs->flt_graph,
+                                 opt,
+                                 &flt_inputs,
+                                 &flt_outputs,
+                                 NULL);
+  if (err < 0) {
+    tvherror("transcode", "%04X: failed to init filter chain", shortid(t));
+    goto out_err;
+  }
+
+  err = avfilter_graph_config(vs->flt_graph, NULL);
+  if (err < 0) {
+    tvherror("transcode", "%04X: failed to config filter chain", shortid(t));
+    goto out_err;
+  }
+
+  avfilter_inout_free(&flt_inputs);
+  avfilter_inout_free(&flt_outputs);
+
+  return 0;  /* all OK */
+
+out_err:
+  if (flt_inputs)
+    avfilter_inout_free(&flt_inputs);
+  if (flt_outputs)
+    avfilter_inout_free(&flt_outputs);
+  if (vs->flt_graph) {
+    avfilter_graph_free(&vs->flt_graph);
+    vs->flt_graph = NULL;
+  }
+
+  return err;
+}
+
 /**
  *
  */
@@ -1032,9 +1158,7 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
   AVCodecContext *ictx, *octx;
   AVDictionary *opts;
   AVPacket packet, packet2;
-  AVPicture deint_pic;
-  uint8_t *buf, *deint;
-  int length, len, ret, got_picture, got_output, got_ref;
+  int length, ret, got_picture, got_output, got_ref;
   video_stream_t *vs = (video_stream_t*)ts;
   streaming_message_t *sm;
   th_pkt_t *pkt2;
@@ -1051,12 +1175,22 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
   icodec = vs->vid_icodec;
   ocodec = vs->vid_ocodec;
 
-  buf = deint = NULL;
   opts = NULL;
 
   got_ref = 0;
 
   if (!avcodec_is_open(ictx)) {
+    if (icodec->id == AV_CODEC_ID_H264) {
+      if (ts->ts_input_gh) {
+        ictx->extradata_size = pktbuf_len(ts->ts_input_gh);
+        ictx->extradata = av_malloc(ictx->extradata_size);
+        memcpy(ictx->extradata,
+               pktbuf_ptr(ts->ts_input_gh), pktbuf_len(ts->ts_input_gh));
+      } else {
+        tvherror("transcode", "%04X: missing meta data for H264", shortid(t));
+      }
+    }
+
     if (avcodec_open2(ictx, icodec, NULL) < 0) {
       tvherror("transcode", "%04X: Unable to open %s decoder", shortid(t), icodec->name);
       transcoder_stream_invalidate(ts);
@@ -1118,6 +1252,15 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
     // Encoder uses "time_base" for bitrate calculation, but "time_base" from decoder
     // will be deprecated in the future, therefore calculate "time_base" from "framerate" if available.
     octx->ticks_per_frame = ictx->ticks_per_frame;
+    if (ictx->framerate.num == 0) {
+      ictx->framerate.num = 30;
+      ictx->framerate.den = 1;
+    }
+    if (ictx->time_base.num == 0) {
+      ictx->time_base.num = ictx->framerate.den;
+      ictx->time_base.den = ictx->framerate.num;
+    }
+    octx->framerate = ictx->framerate;
 #if LIBAVCODEC_VERSION_MICRO >= 100 && LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 13, 100) // ffmpeg 2.5
     octx->time_base       = av_inv_q(av_mul_q(ictx->framerate, av_make_q(ictx->ticks_per_frame, 1)));
 #else
@@ -1129,7 +1272,11 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
 
     switch (ts->ts_type) {
     case SCT_MPEG2VIDEO:
-      octx->pix_fmt        = PIX_FMT_YUV420P;
+       if (!strcmp(ocodec->name, "nvenc") || !strcmp(ocodec->name, "mpeg2_qsv"))
+          octx->pix_fmt    = AV_PIX_FMT_NV12;
+      else
+          octx->pix_fmt    = AV_PIX_FMT_YUV420P;
+
       octx->flags         |= CODEC_FLAG_GLOBAL_HEADER;
 
       if (t->t_props.tp_vbitrate < 64) {
@@ -1152,7 +1299,7 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
       break;
 
     case SCT_VP8:
-      octx->pix_fmt        = PIX_FMT_YUV420P;
+      octx->pix_fmt        = AV_PIX_FMT_YUV420P;
 
       // setting quality to realtime will use as much CPU for transcoding as possible,
       // while still encoding in realtime
@@ -1176,11 +1323,20 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
       break;
 
     case SCT_H264:
-      octx->pix_fmt        = PIX_FMT_YUV420P;
+       if (!strcmp(ocodec->name, "nvenc") || !strcmp(ocodec->name, "h264_qsv"))
+          octx->pix_fmt    = AV_PIX_FMT_NV12;
+      else
+          octx->pix_fmt    = AV_PIX_FMT_YUV420P;
+
       octx->flags         |= CODEC_FLAG_GLOBAL_HEADER;
 
       // Default = "medium". We gain more encoding speed compared to the loss of quality when lowering it _slightly_.
-      av_dict_set(&opts, "preset",  "faster", 0);
+      if (!strcmp(ocodec->name, "nvenc"))
+         av_dict_set(&opts, "preset",  "hq", 0);
+      else if (!strcmp(ocodec->name, "h264_qsv"))
+         av_dict_set(&opts, "preset",  "medium", 0);
+      else
+         av_dict_set(&opts, "preset",  "faster", 0);
 
       // All modern devices should support "high" profile
       av_dict_set(&opts, "profile", "high", 0);
@@ -1205,7 +1361,7 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
       break;
 
     case SCT_HEVC:
-      octx->pix_fmt        = PIX_FMT_YUV420P;
+      octx->pix_fmt        = AV_PIX_FMT_YUV420P;
       octx->flags         |= CODEC_FLAG_GLOBAL_HEADER;
 
       // on all hardware ultrafast (or maybe superfast) should be safe
@@ -1220,10 +1376,10 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
         av_dict_set_int__(&opts, "crf", t->t_props.tp_vbitrate == 0 ? 18 : MIN(51, t->t_props.tp_vbitrate), 0);
 
         // the following is equivalent to tune=zerolatency for presets: ultra/superfast
-        av_dict_set(&opts, "x265_opts", "bframes=0",        0);
-        av_dict_set(&opts, "x265_opts", ":rc-lookahead=0",  AV_DICT_APPEND);
-        av_dict_set(&opts, "x265_opts", ":scenecut=0",      AV_DICT_APPEND);
-        av_dict_set(&opts, "x265_opts", ":frame-threads=1", AV_DICT_APPEND);
+        av_dict_set(&opts, "x265-params", "bframes=0",        0);
+        av_dict_set(&opts, "x265-params", ":rc-lookahead=0",  AV_DICT_APPEND);
+        av_dict_set(&opts, "x265-params", ":scenecut=0",      AV_DICT_APPEND);
+        av_dict_set(&opts, "x265-params", ":frame-threads=1", AV_DICT_APPEND);
       } else {
         int bitrate, maxrate, bufsize;
         bitrate = (t->t_props.tp_vbitrate > max_bitrate) ? max_bitrate : t->t_props.tp_vbitrate;
@@ -1237,12 +1393,14 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
         // this is the same as setting --bitrate=bitrate
         octx->bit_rate = bitrate * 1000;
 
-        av_dict_set(&opts,       "x265_opts", "vbv-bufsize=",  0);
-        av_dict_set_int__(&opts, "x265_opts", bufsize,         AV_DICT_APPEND);
-        av_dict_set(&opts,       "x265_opts", ":vbv-maxrate=",AV_DICT_APPEND);
-        av_dict_set_int__(&opts, "x265_opts", maxrate,         AV_DICT_APPEND);
-        av_dict_set(&opts,       "x265_opts", ":strict-cbr=1", AV_DICT_APPEND);
+        av_dict_set(&opts,       "x265-params", "vbv-bufsize=",  0);
+        av_dict_set_int__(&opts, "x265-params", bufsize,         AV_DICT_APPEND);
+        av_dict_set(&opts,       "x265-params", ":vbv-maxrate=", AV_DICT_APPEND);
+        av_dict_set_int__(&opts, "x265-params", maxrate,         AV_DICT_APPEND);
+        av_dict_set(&opts,       "x265-params", ":strict-cbr=1", AV_DICT_APPEND);
       }
+      // reduce key frame interface for live streaming
+      av_dict_set(&opts, "x265-params", ":keyint=49:min-keyint=15", AV_DICT_APPEND);
 
       break;
 
@@ -1256,79 +1414,53 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
       transcoder_stream_invalidate(ts);
       goto cleanup;
     }
+
+    if (create_video_filter(vs, t, ictx, octx)) {
+      tvherror("transcode", "%04X: Video filter creation failed",
+               shortid(t));
+      transcoder_stream_invalidate(ts);
+      goto cleanup;
+    }
   }
 
-  len = avpicture_get_size(ictx->pix_fmt, ictx->width, ictx->height);
-  deint = av_malloc(len);
-
-  avpicture_fill(&deint_pic,
-		 deint,
-		 ictx->pix_fmt,
-		 ictx->width,
-		 ictx->height);
-
-  if (avpicture_deinterlace(&deint_pic,
-			    (AVPicture *)vs->vid_dec_frame,
-			    ictx->pix_fmt,
-			    ictx->width,
-			    ictx->height) < 0) {
-    tvherror("transcode", "%04X: Cannot deinterlace frame", shortid(t));
+  /* push decoded frame into filter chain */
+  if (av_buffersrc_add_frame(vs->flt_bufsrcctx, vs->vid_dec_frame) < 0) {
+    tvherror("transcode", "%04X: filter input error", shortid(t));
     transcoder_stream_invalidate(ts);
     goto cleanup;
   }
 
-  len = avpicture_get_size(octx->pix_fmt, octx->width, octx->height);
-  buf = av_malloc(len + FF_INPUT_BUFFER_PADDING_SIZE);
-  memset(buf, 0, len);
+  /* and pull out a filtered frame */
+  while (1) {
+	ret = av_buffersink_get_frame(vs->flt_bufsinkctx, vs->vid_enc_frame);
+	if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+		break;
+	if (ret < 0) {
+		tvherror("transcode", "%04X: filter output error", shortid(t));
+		transcoder_stream_invalidate(ts);
+		goto cleanup;
+	}
 
-  avpicture_fill((AVPicture *)vs->vid_enc_frame,
-                 buf,
-                 octx->pix_fmt,
-                 octx->width,
-                 octx->height);
+	vs->vid_enc_frame->format  = octx->pix_fmt;
+	vs->vid_enc_frame->width   = octx->width;
+	vs->vid_enc_frame->height  = octx->height;
 
-  vs->vid_scaler = sws_getCachedContext(vs->vid_scaler,
-				    ictx->width,
-				    ictx->height,
-				    ictx->pix_fmt,
-				    octx->width,
-				    octx->height,
-				    octx->pix_fmt,
-				    1,
-				    NULL,
-				    NULL,
-				    NULL);
+	vs->vid_enc_frame->pkt_pts = vs->vid_dec_frame->pkt_pts;
+	vs->vid_enc_frame->pkt_dts = vs->vid_dec_frame->pkt_dts;
 
-  if (sws_scale(vs->vid_scaler,
-		(const uint8_t * const*)deint_pic.data,
-		deint_pic.linesize,
-		0,
-		ictx->height,
-		vs->vid_enc_frame->data,
-		vs->vid_enc_frame->linesize) < 0) {
-    tvherror("transcode", "%04X: Cannot scale frame", shortid(t));
-    transcoder_stream_invalidate(ts);
-    goto cleanup;
-  }
+	if (vs->vid_dec_frame->reordered_opaque != AV_NOPTS_VALUE)
+		vs->vid_enc_frame->pts = vs->vid_dec_frame->reordered_opaque;
 
-  vs->vid_enc_frame->format  = octx->pix_fmt;
-  vs->vid_enc_frame->width   = octx->width;
-  vs->vid_enc_frame->height  = octx->height;
+	else if (ictx->coded_frame && ictx->coded_frame->pts != AV_NOPTS_VALUE)
+		vs->vid_enc_frame->pts = vs->vid_dec_frame->pts;
 
-  vs->vid_enc_frame->pkt_pts = vs->vid_dec_frame->pkt_pts;
-  vs->vid_enc_frame->pkt_dts = vs->vid_dec_frame->pkt_dts;
-
-  if (vs->vid_dec_frame->reordered_opaque != AV_NOPTS_VALUE)
-    vs->vid_enc_frame->pts = vs->vid_dec_frame->reordered_opaque;
-
-  else if (ictx->coded_frame && ictx->coded_frame->pts != AV_NOPTS_VALUE)
-    vs->vid_enc_frame->pts = vs->vid_dec_frame->pts;
-
-  ret = avcodec_encode_video2(octx, &packet2, vs->vid_enc_frame, &got_output);
-  if (ret < 0) {
-    tvherror("transcode", "%04X: Error encoding frame", shortid(t));
-    transcoder_stream_invalidate(ts);
-    goto cleanup;
+	ret = avcodec_encode_video2(octx, &packet2, vs->vid_enc_frame, &got_output);
+	if (ret < 0) {
+		tvherror("transcode", "%04X: Error encoding frame", shortid(t));
+		transcoder_stream_invalidate(ts);
+		goto cleanup;
+	}
+	av_frame_unref(vs->vid_enc_frame);
   }
 
   if (got_output)
@@ -1341,12 +1473,6 @@ transcoder_stream_video(transcoder_t *t, transcoder_stream_t *ts, th_pkt_t *pkt)
   av_free_packet(&packet2);
 
   av_free_packet(&packet);
-
-  if(buf)
-    av_free(buf);
-
-  if(deint)
-    av_free(deint);
 
   if(opts)
     av_dict_free(&opts);
@@ -1386,6 +1512,8 @@ transcoder_packet(transcoder_t *t, th_pkt_t *pkt)
 static void
 transcoder_destroy_stream(transcoder_t *t, transcoder_stream_t *ts)
 {
+  if (ts->ts_input_gh)
+    pktbuf_ref_dec(ts->ts_input_gh);
   free(ts);
 }
 
@@ -1406,8 +1534,11 @@ transcoder_init_stream(transcoder_t *t, streaming_start_component_t *ssc)
 
   LIST_INSERT_HEAD(&t->t_stream_list, ts, ts_link);
 
-  if(ssc->ssc_gh)
+  if(ssc->ssc_gh) {
     pktbuf_ref_inc(ssc->ssc_gh);
+    ts->ts_input_gh = ssc->ssc_gh;
+    pktbuf_ref_inc(ssc->ssc_gh);
+  }
 
   tvhinfo("transcode", "%04X: %d:%s ==> Passthrough",
 	  shortid(t), ssc->ssc_index,
@@ -1437,7 +1568,7 @@ transcoder_destroy_subtitle(transcoder_t *t, transcoder_stream_t *ts)
     av_free(ss->sub_octx);
   }
 
-  free(ts);
+  transcoder_destroy_stream(t, ts);
 }
 
 
@@ -1476,6 +1607,10 @@ transcoder_init_subtitle(transcoder_t *t, streaming_start_component_t *ssc)
   ss->ts_target     = t->t_output;
   ss->ts_handle_pkt = transcoder_stream_subtitle;
   ss->ts_destroy    = transcoder_destroy_subtitle;
+  if (ssc->ssc_gh) {
+    ss->ts_input_gh = ssc->ssc_gh;
+    pktbuf_ref_inc(ssc->ssc_gh);
+  }
 
   ss->sub_icodec = icodec;
   ss->sub_ocodec = ocodec;
@@ -1524,7 +1659,7 @@ transcoder_destroy_audio(transcoder_t *t, transcoder_stream_t *ts)
 
   av_audio_fifo_free(as->fifo);
 
-  free(ts);
+  transcoder_destroy_stream(t, ts);
 }
 
 
@@ -1570,6 +1705,10 @@ transcoder_init_audio(transcoder_t *t, streaming_start_component_t *ssc)
   as->ts_target     = t->t_output;
   as->ts_handle_pkt = transcoder_stream_audio;
   as->ts_destroy    = transcoder_destroy_audio;
+  if (ssc->ssc_gh) {
+    as->ts_input_gh = ssc->ssc_gh;
+    pktbuf_ref_inc(ssc->ssc_gh);
+  }
 
   as->aud_icodec = icodec;
   as->aud_ocodec = ocodec;
@@ -1624,16 +1763,18 @@ transcoder_destroy_video(transcoder_t *t, transcoder_stream_t *ts)
   if(vs->vid_dec_frame)
     av_free(vs->vid_dec_frame);
 
-  if(vs->vid_scaler)
-    sws_freeContext(vs->vid_scaler);
-
   if(vs->vid_enc_frame)
     av_free(vs->vid_enc_frame);
 
   if (vs->vid_first_pkt)
     pkt_ref_dec(vs->vid_first_pkt);
 
-  free(ts);
+  if (vs->flt_graph) {
+    avfilter_graph_free(&vs->flt_graph);
+    vs->flt_graph = NULL;
+  }
+
+  transcoder_destroy_stream(t, ts);
 }
 
 
@@ -1669,6 +1810,10 @@ transcoder_init_video(transcoder_t *t, streaming_start_component_t *ssc)
   vs->ts_target     = t->t_output;
   vs->ts_handle_pkt = transcoder_stream_video;
   vs->ts_destroy    = transcoder_destroy_video;
+  if (ssc->ssc_gh) {
+    vs->ts_input_gh = ssc->ssc_gh;
+    pktbuf_ref_inc(ssc->ssc_gh);
+  }
 
   vs->vid_icodec = icodec;
   vs->vid_ocodec = ocodec;
@@ -1679,11 +1824,13 @@ transcoder_init_video(transcoder_t *t, streaming_start_component_t *ssc)
   if (t->t_props.tp_nrprocessors)
     vs->vid_octx->thread_count = t->t_props.tp_nrprocessors;
 
-  vs->vid_dec_frame = avcodec_alloc_frame();
-  vs->vid_enc_frame = avcodec_alloc_frame();
+  vs->vid_dec_frame = av_frame_alloc();
+  vs->vid_enc_frame = av_frame_alloc();
 
-  avcodec_get_frame_defaults(vs->vid_dec_frame);
-  avcodec_get_frame_defaults(vs->vid_enc_frame);
+  av_frame_unref(vs->vid_dec_frame);
+  av_frame_unref(vs->vid_enc_frame);
+
+  vs->flt_graph = NULL;		/* allocated in packet processor */
 
   LIST_INSERT_HEAD(&t->t_stream_list, (transcoder_stream_t*)vs, ts_link);
 

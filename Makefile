@@ -22,7 +22,7 @@
 
 include $(dir $(lastword $(MAKEFILE_LIST))).config.mk
 PROG    := $(BUILDDIR)/tvheadend
-LANGUAGES ?= bg cs de en_US en_GB es fa fr he hr hu it lv nl pl pt ru sv
+LANGUAGES ?= bg cs da de en_US en_GB es et fa fi fr he hr hu it lv nl pl pt ru sv uk
 
 #
 # Common compiler flags
@@ -65,10 +65,12 @@ CFLAGS  += -Wno-parentheses-equality -Wno-incompatible-pointer-types
 endif
 
 ifeq ($(CONFIG_LIBFFMPEG_STATIC),yes)
+
 CFLAGS  += -I${ROOTDIR}/libav_static/build/ffmpeg/include
 LDFLAGS_FFDIR = ${ROOTDIR}/libav_static/build/ffmpeg/lib
 LDFLAGS += ${LDFLAGS_FFDIR}/libavresample.a
 LDFLAGS += ${LDFLAGS_FFDIR}/libswresample.a
+LDFLAGS += ${LDFLAGS_FFDIR}/libavfilter.a
 LDFLAGS += ${LDFLAGS_FFDIR}/libswscale.a
 LDFLAGS += ${LDFLAGS_FFDIR}/libavutil.a
 LDFLAGS += ${LDFLAGS_FFDIR}/libavformat.a
@@ -77,11 +79,13 @@ LDFLAGS += ${LDFLAGS_FFDIR}/libavutil.a
 LDFLAGS += ${LDFLAGS_FFDIR}/libvorbisenc.a
 LDFLAGS += ${LDFLAGS_FFDIR}/libvorbis.a
 LDFLAGS += ${LDFLAGS_FFDIR}/libogg.a
+
 ifeq ($(CONFIG_LIBX264_STATIC),yes)
 LDFLAGS += ${LDFLAGS_FFDIR}/libx264.a -ldl
 else
 LDFLAGS += -lx264 -ldl
 endif
+
 ifeq ($(CONFIG_LIBX265),yes)
 ifeq ($(CONFIG_LIBX265_STATIC),yes)
 LDFLAGS += ${LDFLAGS_FFDIR}/libx265.a -lstdc++
@@ -89,8 +93,11 @@ else
 LDFLAGS += -lx265
 endif
 endif
+
 LDFLAGS += ${LDFLAGS_FFDIR}/libvpx.a
+
 CONFIG_LIBMFX_VA_LIBS =
+
 ifeq ($(CONFIG_LIBMFX),yes)
 CONFIG_LIBMFX_VA_LIBS += -lva
 ifeq ($(CONFIG_VA_DRM),yes)
@@ -106,7 +113,8 @@ LDFLAGS += -lmfx
 endif
 LDFLAGS += ${CONFIG_LIBMFX_VA_LIBS}
 endif
-endif
+
+endif # CONFIG_LIBFFMPEG_STATIC
 
 ifeq ($(CONFIG_HDHOMERUN_STATIC),yes)
 CFLAGS  += -I${ROOTDIR}/libhdhomerun_static
@@ -179,6 +187,7 @@ SRCS-1 = \
 	src/htsmsg_xml.c \
 	src/misc/dbl.c \
 	src/misc/json.c \
+	src/misc/m3u.c \
 	src/settings.c \
 	src/htsbuf.c \
 	src/trap.c \
@@ -206,6 +215,10 @@ SRCS-1 = \
 	src/lock.c
 SRCS = $(SRCS-1)
 I18N-C = $(SRCS-1)
+
+SRCS-ZLIB = \
+	src/zlib.c
+SRCS-${CONFIG_ZLIB} += $(SRCS-ZLIB)
 
 SRCS-UPNP = \
 	src/upnp.c
@@ -373,6 +386,7 @@ SRCS-IPTV = \
         src/input/mpegts/iptv/iptv_rtsp.c \
         src/input/mpegts/iptv/iptv_rtcp.c \
         src/input/mpegts/iptv/iptv_pipe.c \
+        src/input/mpegts/iptv/iptv_file.c \
 	src/input/mpegts/iptv/iptv_auto.c
 SRCS-${CONFIG_IPTV} += $(SRCS-IPTV)
 I18N-C += $(SRCS-IPTV)
@@ -413,6 +427,9 @@ SRCS-$(CONFIG_BONJOUR) = $(SRCS-BONJOUR)
 I18N-C += $(SRCS-BONJOUR)
 
 # libav
+DEPS-LIBAV = \
+	src/main.c \
+	src/tvhlog.c
 SRCS-LIBAV = \
 	src/libav.c \
 	src/muxer/muxer_libav.c \
@@ -521,10 +538,10 @@ OBJS_EXTRA = $(SRCS_EXTRA:%.c=$(BUILDDIR)/%.so)
 DEPS       = ${OBJS:%.o=%.d}
 
 ifeq ($(CONFIG_LIBFFMPEG_STATIC),yes)
-DEPS      += ${BUILDDIR}/libffmpeg_stamp
+ALL-yes   += ${BUILDDIR}/libffmpeg_stamp
 endif
 ifeq ($(CONFIG_HDHOMERUN_STATIC),yes)
-DEPS      += ${BUILDDIR}/libhdhomerun_stamp
+ALL-yes   += ${BUILDDIR}/libhdhomerun_stamp
 endif
 
 SRCS += build.c timestamp.c
@@ -534,23 +551,21 @@ SRCS += build.c timestamp.c
 #
 
 # Default
+.PHONY: all
 all: $(ALL-yes) ${PROG}
 
-# Special
-.PHONY:	clean distclean check_config reconfigure
-
 # Check configure output is valid
-check_config:
-	@test $(ROOTDIR)/.config.mk -nt $(ROOTDIR)/configure\
-		|| echo "./configure output is old, please re-run"
-	@test $(ROOTDIR)/.config.mk -nt $(ROOTDIR)/configure
+.config.mk: configure
+	@echo "./configure output is old, please re-run"
+	@false
 
 # Recreate configuration
+.PHONY: reconfigure
 reconfigure:
 	$(ROOTDIR)/configure $(CONFIGURE_ARGS)
 
 # Binary
-${PROG}: check_config make_webui $(OBJS)
+${PROG}: .config.mk make_webui $(OBJS)
 	$(CC) -o $@ $(OBJS) $(CFLAGS) $(LDFLAGS)
 
 # Object
@@ -564,12 +579,15 @@ ${BUILDDIR}/%.so: ${SRCS_EXTRA}
 	${CC} -O -fbuiltin -fomit-frame-pointer -fPIC -shared -o $@ $< -ldl
 
 # Clean
+.PHONY: clean
 clean:
 	rm -rf ${BUILDDIR}/src ${BUILDDIR}/bundle* ${BUILDDIR}/build.o ${BUILDDIR}/timestamp.* \
 	       src/tvh_locale_inc.c
 	find . -name "*~" | xargs rm -f
 	$(MAKE) -f Makefile.webui clean
 
+# Distclean
+.PHONY: distclean
 distclean: clean
 	rm -rf ${ROOTDIR}/libav_static
 	rm -rf ${ROOTDIR}/libhdhomerun_static
@@ -665,8 +683,7 @@ make_webui:
 # Static FFMPEG
 
 ifeq ($(CONFIG_LIBFFMPEG_STATIC),yes)
-${ROOTDIR}/src/libav.h: ${BUILDDIR}/libffmpeg_stamp
-${SRCS_LIBAV}: ${BUILDDIR}/libffmpeg_stamp
+src/libav.h ${SRCS-LIBAV} ${DEPS-LIBAV}: ${BUILDDIR}/libffmpeg_stamp
 endif
 
 ${BUILDDIR}/libffmpeg_stamp: ${ROOTDIR}/libav_static/build/ffmpeg/lib/libavcodec.a
@@ -678,8 +695,7 @@ ${ROOTDIR}/libav_static/build/ffmpeg/lib/libavcodec.a: Makefile.ffmpeg
 # Static HDHOMERUN library
 
 ifeq ($(CONFIG_LIBHDHOMERUN_STATIC),yes)
-${ROOTDIR}/src/input/mpegts/tvhdhomerun/tvhdhomerun_private.h: ${BUILDDIR}/libhdhomerun_stamp
-${SRCS_HDHOMERUN}: ${BUILDDIR}/libhdhomerun_stamp
+src/input/mpegts/tvhdhomerun/tvhdhomerun_private.h ${SRCS-HDHOMERUN}: ${BUILDDIR}/libhdhomerun_stamp
 endif
 
 ${BUILDDIR}/libhdhomerun_stamp: ${ROOTDIR}/libhdhomerun_static/libhdhomerun/libhdhomerun.a

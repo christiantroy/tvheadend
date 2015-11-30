@@ -409,6 +409,7 @@ static int _eit_process_event_one
   epg_broadcast_t *ebc;
   epg_episode_t *ee;
   epg_serieslink_t *es;
+  epg_running_t run;
   eit_event_t ev;
 
   /* Core fields */
@@ -548,10 +549,19 @@ static int _eit_process_event_one
   if (ev.desc)    lang_str_destroy(ev.desc);
 
   /* use running flag only for current broadcast */
-  if (running && tableid == 0x4e && sect == 0)
-    epg_broadcast_notify_running(ebc, EPG_SOURCE_EIT, running == 4);
-  if (running && running != 4 && tableid == 0x4e && sect == 1)
-    epg_broadcast_notify_running(ebc, EPG_SOURCE_EIT, 0);
+  if (running && tableid == 0x4e) {
+    if (sect == 0) {
+      switch (running) {
+      case 2:  run = EPG_RUNNING_WARM;  break;
+      case 3:  run = EPG_RUNNING_PAUSE; break;
+      case 4:  run = EPG_RUNNING_NOW;   break;
+      default: run = EPG_RUNNING_STOP;  break;
+      }
+      epg_broadcast_notify_running(ebc, EPG_SOURCE_EIT, run);
+    } else if (sect == 1 && running != 2 && running != 3 && running != 4) {
+      epg_broadcast_notify_running(ebc, EPG_SOURCE_EIT, EPG_RUNNING_STOP);
+    }
+  }
 
   return 0;
 }
@@ -625,14 +635,16 @@ _eit_callback
   // TODO: extra ID should probably include onid
 
   /* Register interest */
-  if (tableid == 0x4e || tableid >= 0x50)
+  if (tableid == 0x4e || (tableid >= 0x50 && tableid < 0x60))
     ota = epggrab_ota_register((epggrab_module_ota_t*)mod, NULL, mm);
 
   /* Begin */
   r = dvb_table_begin((mpegts_psi_table_t *)mt, ptr, len,
                       tableid, extraid, 11, &st, &sect, &last, &ver);
-  if (r != 1) return r;
-  if (st) {
+  if (r == 0) goto complete;
+  if (r < 0) return r;
+  if (tableid != 0x4e && r != 1) return r;
+  if (st && r > 0) {
     uint32_t mask;
     int sa = seg & 0xF8;
     int sb = 7 - (seg & 0x07);
@@ -705,7 +717,8 @@ _eit_callback
   
 done:
   r = dvb_table_end((mpegts_psi_table_t *)mt, st, sect);
-  if (ota && !r)
+complete:
+  if (ota && !r && (tableid >= 0x50 && tableid < 0x60))
     epggrab_ota_complete((epggrab_module_ota_t*)mod, ota);
   
   return r;

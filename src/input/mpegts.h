@@ -49,6 +49,7 @@ typedef struct mpegts_input         mpegts_input_t;
 typedef struct mpegts_table_feed    mpegts_table_feed_t;
 typedef struct mpegts_network_link  mpegts_network_link_t;
 typedef struct mpegts_packet        mpegts_packet_t;
+typedef struct mpegts_pcr           mpegts_pcr_t;
 typedef struct mpegts_buffer        mpegts_buffer_t;
 
 /* Lists */
@@ -121,8 +122,17 @@ struct mpegts_packet
   TAILQ_ENTRY(mpegts_packet)  mp_link;
   size_t                      mp_len;
   mpegts_mux_t               *mp_mux;
+  uint8_t                     mp_cc_restart;
   uint8_t                     mp_data[0];
 };
+
+struct mpegts_pcr {
+  int64_t  pcr_first;
+  int64_t  pcr_last;
+  uint16_t pcr_pid;
+};
+
+#define MPEGTS_DATA_CC_RESTART (1<<0)
 
 typedef int (*mpegts_table_callback_t)
   ( mpegts_table_t*, const uint8_t *buf, int len, int tableid );
@@ -153,7 +163,6 @@ typedef struct mpegts_pid_sub
 #define MPS_WEIGHT_NIT      999
 #define MPS_WEIGHT_BAT      999
 #define MPS_WEIGHT_VCT      999
-#define MPS_WEIGHT_STT      999
 #define MPS_WEIGHT_EIT      999
 #define MPS_WEIGHT_ETT      999
 #define MPS_WEIGHT_MGT      999
@@ -168,6 +177,7 @@ typedef struct mpegts_pid_sub
 #define MPS_WEIGHT_NIT2     300
 #define MPS_WEIGHT_SDT2     300
 #define MPS_WEIGHT_TDT      101
+#define MPS_WEIGHT_STT      101
 #define MPS_WEIGHT_PMT_SCAN 100
   int   mps_weight;
   void *mps_owner;
@@ -289,6 +299,7 @@ struct mpegts_network
    * Identification
    */
   char                    *mn_network_name;
+  char                    *mn_provider_network_name;
 
   /*
    * Inputs
@@ -394,7 +405,8 @@ struct mpegts_mux
    */
   
   LIST_ENTRY(mpegts_mux)  mm_network_link;
-  mpegts_network_t        *mm_network;
+  mpegts_network_t       *mm_network;
+  char                   *mm_provider_network_name;
   uint16_t                mm_onid;
   uint16_t                mm_tsid;
 
@@ -640,6 +652,7 @@ struct mpegts_input
 
   int mi_initscan;
   int mi_idlescan;
+  uint32_t mi_free_weight;
 
   char *mi_linked;
 
@@ -852,6 +865,7 @@ int mpegts_mux_instance_start
 
 int mpegts_mux_instance_weight ( mpegts_mux_instance_t *mmi );
 
+int mpegts_mux_set_network_name ( mpegts_mux_t *mm, const char *name );
 int mpegts_mux_set_tsid ( mpegts_mux_t *mm, uint16_t tsid, int force );
 int mpegts_mux_set_onid ( mpegts_mux_t *mm, uint16_t onid );
 int mpegts_mux_set_crid_authority ( mpegts_mux_t *mm, const char *defauth );
@@ -894,7 +908,7 @@ void mpegts_mux_update_pids ( mpegts_mux_t *mm );
 
 void mpegts_input_recv_packets
   (mpegts_input_t *mi, mpegts_mux_instance_t *mmi, sbuf_t *sb,
-   int64_t *pcr, uint16_t *pcr_pid);
+   int flags, mpegts_pcr_t *pcr);
 
 int mpegts_input_get_weight ( mpegts_input_t *mi, mpegts_mux_t *mm, int flags );
 int mpegts_input_get_priority ( mpegts_input_t *mi, mpegts_mux_t *mm, int flags );

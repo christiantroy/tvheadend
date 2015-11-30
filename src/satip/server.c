@@ -21,6 +21,7 @@
 #include "upnp.h"
 #include "settings.h"
 #include "config.h"
+#include "input/mpegts/iptv/iptv_private.h"
 #include "satip/server.h"
 
 #define UPNP_MAX_AGE 1800
@@ -111,6 +112,7 @@ satip_server_http_xml(http_connection_t *hc)
   char *devicelist = NULL;
   htsbuf_queue_t q;
   mpegts_network_t *mn;
+  mpegts_mux_t *mm;
   int dvbt = 0, dvbs = 0, dvbc = 0, atsc = 0;
   int srcs = 0, delim = 0, tuners = 0, i;
   struct xml_type_xtab *p;
@@ -145,6 +147,13 @@ satip_server_http_xml(http_connection_t *hc)
       dvbc++;
     else if (idnode_is_instance(&mn->mn_id, &dvb_network_atsc_class))
       atsc++;
+    else if (idnode_is_instance(&mn->mn_id, &iptv_network_class)) {
+      LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link)
+        if (((iptv_mux_t *)mm)->mm_iptv_satip_dvbt_freq) {
+          dvbt++;
+          break;
+        }
+    }
   }
   for (p = xtab; p->id; p++) {
     i = *p->cptr;
@@ -263,7 +272,7 @@ CONFIGID.UPNP.ORG: 0\r\n\
              usn2, (long)satip_server_bootid);
 
     htsbuf_queue_init(&q, 0);
-    htsbuf_append(&q, buf, strlen(buf));
+    htsbuf_append_str(&q, buf);
     upnp_send(&q, NULL, attempt * 11, 1);
     htsbuf_queue_flush(&q);
   }
@@ -321,7 +330,7 @@ DEVICEID.SES.COM: %d\r\n\r\n"
              satip_server_deviceid);
 
     htsbuf_queue_init(&q, 0);
-    htsbuf_append(&q, buf, strlen(buf));
+    htsbuf_append_str(&q, buf);
     upnp_send(&q, NULL, attempt * 11, 1);
     htsbuf_queue_flush(&q);
   }
@@ -361,7 +370,7 @@ CONFIGID.UPNP.ORG: 0\r\n"
            satip_server_conf.satip_uuid, (long)satip_server_bootid);
 
   htsbuf_queue_init(&q, 0);
-  htsbuf_append(&q, buf, strlen(buf));
+  htsbuf_append_str(&q, buf);
   if (deviceid)
     htsbuf_qprintf(&q, "DEVICEID.SES.COM: %s", deviceid);
   htsbuf_append(&q, "\r\n", 2);
@@ -556,7 +565,7 @@ static htsmsg_t *satip_server_class_muxcfg_list ( void *o, const char *lang )
 const idclass_t satip_server_class = {
   .ic_snode      = (idnode_t *)&satip_server_conf,
   .ic_class      = "satip_server",
-  .ic_caption    = N_("SAT>IP Server"),
+  .ic_caption    = N_("SAT>IP server"),
   .ic_event      = "satip_server",
   .ic_perm_def   = ACCESS_ADMIN,
   .ic_save       = satip_server_class_save,
@@ -566,7 +575,7 @@ const idclass_t satip_server_class = {
          .number = 1,
       },
       {
-         .name   = N_("Exported Tuners"),
+         .name   = N_("Exported tuners"),
          .number = 2,
       },
       {}
@@ -590,14 +599,14 @@ const idclass_t satip_server_class = {
     {
       .type   = PT_INT,
       .id     = "satip_weight",
-      .name   = N_("Subscription Weight"),
+      .name   = N_("Subscription weight"),
       .off    = offsetof(struct satip_server_conf, satip_weight),
       .group  = 1,
     },
     {
       .type   = PT_INT,
       .id     = "satip_descramble",
-      .name   = N_("Descramble Services (Limit Per Mux)"),
+      .name   = N_("Descramble services (limit per mux)"),
       .off    = offsetof(struct satip_server_conf, satip_descramble),
       .group  = 1,
     },
@@ -611,7 +620,7 @@ const idclass_t satip_server_class = {
     {
       .type   = PT_INT,
       .id     = "satip_muxcnf",
-      .name   = N_("Mux Handling"),
+      .name   = N_("Mux handling"),
       .off    = offsetof(struct satip_server_conf, satip_muxcnf),
       .list   = satip_server_class_muxcfg_list,
       .group  = 1,
@@ -719,7 +728,7 @@ void satip_server_init(int rtsp_port)
   satip_server_bootid = time(NULL);
   satip_server_conf.satip_deviceid = 1;
 
-  if (tcp_server_bound(http_server, &http) < 0) {
+  if (tcp_server_bound(http_server, &http, PF_INET) < 0) {
     tvherror("satips", "Unable to determine the HTTP/RTSP address");
     return;
   }

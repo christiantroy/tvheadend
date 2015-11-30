@@ -139,8 +139,8 @@ static htsmsg_t *
 service_class_auto_list ( void *o, const char *lang )
 {
   static const struct strtab tab[] = {
-    { N_("Auto Check Enabled"),  0 },
-    { N_("Auto Check Disabled"), 1 },
+    { N_("Auto check enabled"),  0 },
+    { N_("Auto check disabled"), 1 },
     { N_("Missing In PAT/SDT"),  2 }
   };
   return strtab2htsmsg(tab, 1, lang);
@@ -165,7 +165,7 @@ const idclass_t service_class = {
     {
       .type     = PT_INT,
       .id       = "auto",
-      .name     = N_("Automatic Checking"),
+      .name     = N_("Automatic checking"),
       .list     = service_class_auto_list,
       .off      = offsetof(service_t, s_auto),
     },
@@ -206,7 +206,7 @@ const idclass_t service_class = {
 
 const idclass_t service_raw_class = {
   .ic_class      = "service_raw",
-  .ic_caption    = N_("Service Raw"),
+  .ic_caption    = N_("Service raw"),
   .ic_event      = "service_raw",
   .ic_perm_def   = ACCESS_ADMIN,
   .ic_delete     = service_class_delete,
@@ -232,6 +232,8 @@ stream_init(elementary_stream_t *st)
   st->es_prevdts = PTS_UNSET;
 
   st->es_blank = 0;
+
+  TAILQ_INIT(&st->es_backlog);
 }
 
 
@@ -245,6 +247,8 @@ stream_clean(elementary_stream_t *st)
   st->es_priv = NULL;
 
   /* Clear reassembly buffers */
+
+  streaming_queue_clear(&st->es_backlog);
 
   st->es_startcode = 0;
   
@@ -702,6 +706,12 @@ service_find_instance
       service_instance_destroy(sil, si);
   }
   
+  if (TAILQ_EMPTY(sil)) {
+    if (*error < SM_CODE_NO_ADAPTERS)
+      *error = SM_CODE_NO_ADAPTERS;
+    return NULL;
+  }
+
   /* Debug */
   TAILQ_FOREACH(si, sil, si_link) {
     const char *name = ch ? channel_get_name(ch) : NULL;
@@ -806,6 +816,8 @@ service_destroy(service_t *t, int delconf)
   while((s = LIST_FIRST(&t->s_subscriptions)) != NULL)
     subscription_unlink_service(s, SM_CODE_SOURCE_DELETED);
 
+  bouquet_destroy_by_service(t, delconf);
+
   while ((ilm = LIST_FIRST(&t->s_channels)))
     idnode_list_unlink(ilm, delconf ? t : NULL);
 
@@ -814,8 +826,6 @@ service_destroy(service_t *t, int delconf)
   assert(t->s_status == SERVICE_IDLE);
 
   t->s_status = SERVICE_ZOMBIE;
-
-  bouquet_destroy_by_service(t);
 
   TAILQ_INIT(&t->s_filt_components);
   while((st = TAILQ_FIRST(&t->s_components)) != NULL)

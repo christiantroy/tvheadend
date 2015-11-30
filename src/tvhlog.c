@@ -23,6 +23,10 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
+#if ENABLE_EXECINFO
+#include <execinfo.h>
+#endif
+
 #include "libav.h"
 #include "webui/webui.h"
 
@@ -400,6 +404,27 @@ _tvhlog_hexdump(const char *file, int line,
 }
 
 /*
+ *
+ */
+void
+tvhlog_backtrace_printf(const char *fmt, ...)
+{
+#if ENABLE_EXECINFO
+  static void *frames[5];
+  int nframes = backtrace(frames, 5), i;
+  char **strings = backtrace_symbols(frames, nframes);
+  va_list args;
+
+  va_start(args, fmt);
+  vprintf(fmt, args);
+  va_end(args);
+  for (i = 0; i < nframes; i++)
+    printf("  %s\n", strings[i]);
+  free(strings);
+#endif
+}
+
+/*
  * Initialise
  */
 void 
@@ -511,7 +536,27 @@ tvhlog_class_tracesubs_set ( void *o, const void *v )
 }
 
 static const void *
-tvhlog_class_syslog_get ( void *o )
+tvhlog_class_enable_syslog_get ( void *o )
+{
+  static int si;
+  si = (tvhlog_options & TVHLOG_OPT_SYSLOG) ? 1 : 0;
+  return &si;
+}
+
+static int
+tvhlog_class_enable_syslog_set ( void *o, const void *v )
+{
+  pthread_mutex_lock(&tvhlog_mutex);
+  if (*(int *)v)
+    tvhlog_options |= TVHLOG_OPT_SYSLOG;
+  else
+    tvhlog_options &= ~TVHLOG_OPT_SYSLOG;
+  pthread_mutex_unlock(&tvhlog_mutex);
+  return 1;
+}
+
+static const void *
+tvhlog_class_debug_syslog_get ( void *o )
 {
   static int si;
   si = (tvhlog_options & TVHLOG_OPT_DBG_SYSLOG) ? 1 : 0;
@@ -519,7 +564,7 @@ tvhlog_class_syslog_get ( void *o )
 }
 
 static int
-tvhlog_class_syslog_set ( void *o, const void *v )
+tvhlog_class_debug_syslog_set ( void *o, const void *v )
 {
   pthread_mutex_lock(&tvhlog_mutex);
   if (*(int *)v)
@@ -599,10 +644,18 @@ const idclass_t tvhlog_conf_class = {
     },
     {
       .type   = PT_BOOL,
+      .id     = "enable_syslog",
+      .name   = N_("Enable syslog"),
+      .get    = tvhlog_class_enable_syslog_get,
+      .set    = tvhlog_class_enable_syslog_set,
+      .group  = 1,
+    },
+    {
+      .type   = PT_BOOL,
       .id     = "syslog",
       .name   = N_("Debug to syslog"),
-      .get    = tvhlog_class_syslog_get,
-      .set    = tvhlog_class_syslog_set,
+      .get    = tvhlog_class_debug_syslog_get,
+      .set    = tvhlog_class_debug_syslog_set,
       .group  = 1,
     },
     {

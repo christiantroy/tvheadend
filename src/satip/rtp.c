@@ -355,7 +355,7 @@ void satip_rtp_queue(void *id, th_subscription_t *subs,
                      struct sockaddr_storage *peer, int port,
                      int fd_rtp, int fd_rtcp,
                      int frontend, int source, dvb_mux_conf_t *dmc,
-                     mpegts_apids_t *pids)
+                     mpegts_apids_t *pids, int perm_lock)
 {
   satip_rtp_session_t *rtp = calloc(1, sizeof(*rtp));
 
@@ -387,6 +387,13 @@ void satip_rtp_queue(void *id, th_subscription_t *subs,
   } else {
     socket_set_dscp(rtp->fd_rtp, IPTOS_DSCP_EF, NULL, 0);
     socket_set_dscp(rtp->fd_rtcp, IPTOS_DSCP_EF, NULL, 0);
+  }
+
+  if (perm_lock) {
+    rtp->sig.signal_scale = SIGNAL_STATUS_SCALE_RELATIVE;
+    rtp->sig.signal = 0xa000;
+    rtp->sig.snr_scale = SIGNAL_STATUS_SCALE_RELATIVE;
+    rtp->sig.snr = 28000;
   }
 
   pthread_mutex_lock(&satip_rtp_lock);
@@ -791,13 +798,18 @@ end:
 /*
  *
  */
-void satip_rtp_init(void)
+void satip_rtp_init(int boot)
 {
   TAILQ_INIT(&satip_rtp_sessions);
   pthread_mutex_init(&satip_rtp_lock, NULL);
 
-  satip_rtcp_run = 1;
-  tvhthread_create(&satip_rtcp_tid, NULL, satip_rtcp_thread, NULL, "satip-rtcp");
+  if (boot)
+    satip_rtcp_run = 0;
+
+  if (!boot && !satip_rtcp_run) {
+    satip_rtcp_run = 1;
+    tvhthread_create(&satip_rtcp_tid, NULL, satip_rtcp_thread, NULL, "satip-rtcp");
+  }
 }
 
 /*

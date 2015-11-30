@@ -90,6 +90,7 @@ typedef struct elementary_stream {
   int es_global_data_len;
 
   struct th_pkt *es_curpkt;
+  struct streaming_message_queue es_backlog;
   int64_t es_curpts;
   int64_t es_curdts;
   int64_t es_prevdts;
@@ -102,9 +103,6 @@ typedef struct elementary_stream {
 
   /* CA ID's on this stream */
   struct caid_list es_caids;
-
-  int es_vbv_size;        /* Video buffer size (in bytes) */
-  int es_vbv_delay;       /* -1 if CBR */
 
   /* */
 
@@ -320,6 +318,7 @@ typedef struct service {
   int64_t     (*s_channel_number) (struct service *);
   const char *(*s_channel_name)   (struct service *);
   const char *(*s_channel_epgid)  (struct service *);
+  htsmsg_t   *(*s_channel_tags)   (struct service *);
   const char *(*s_provider_name)  (struct service *);
   const char *(*s_channel_icon)   (struct service *);
   void        (*s_mapped)         (struct service *);
@@ -345,7 +344,6 @@ typedef struct service {
    * Service mapping, see service_mapper.c form details
    */
   int s_sm_onqueue;
-  TAILQ_ENTRY(service) s_sm_link;
 
   /**
    * Pending save.

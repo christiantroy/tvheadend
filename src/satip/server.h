@@ -62,7 +62,7 @@ void satip_rtp_queue(void *id, th_subscription_t *subs,
                      int fd_rtp, int fd_rtcp,
                      int frontend, int source,
                      dvb_mux_conf_t *dmc,
-                     mpegts_apids_t *pids);
+                     mpegts_apids_t *pids, int perm_lock);
 void satip_rtp_update(void *id, th_subscription_t *subs,
                       streaming_queue_t *sq,
                       int frontend, int source,
@@ -74,7 +74,7 @@ void satip_rtp_update_pmt_pids(void *id, mpegts_apids_t *pmt_pids);
 int satip_rtp_status(void *id, char *buf, int len);
 void satip_rtp_close(void *id);
 
-void satip_rtp_init(void);
+void satip_rtp_init(int boot);
 void satip_rtp_done(void);
 
 void satip_server_rtsp_init(const char *bindaddr, int port,

@@ -110,6 +110,17 @@ dvb_bouquet_comment ( bouquet_t *bq, mpegts_mux_t *mm )
   bouquet_change_comment(bq, comment, 0);
 }
 
+static void
+dvb_service_autoenable( mpegts_service_t *s, const char *where )
+{
+  if (!s->s_enabled && s->s_auto == SERVICE_AUTO_PAT_MISSING) {
+    tvhinfo("mpegts", "enabling service %s [sid %04X/%d] (found in %s)",
+            s->s_nicename, s->s_dvb_service_id, s->s_dvb_service_id, where);
+    service_set_enabled((service_t *)s, 1, SERVICE_AUTO_NORMAL);
+  }
+  s->s_dvb_check_seen = dispatch_clock;
+}
+
 #if ENABLE_MPEGTS_DVB
 static mpegts_mux_t *
 dvb_fs_mux_find ( mpegts_mux_t *mm, uint16_t onid, uint16_t tsid )
@@ -1383,6 +1394,8 @@ dvb_nit_callback
     save |= mpegts_network_set_network_name(mn, name);
     if (save)
       mn->mn_config_save(mn);
+    if (mpegts_mux_set_network_name(mm, name))
+      mm->mm_config_save(mm);
   }
 
   /* Transport length */
@@ -1464,14 +1477,8 @@ dvb_sdt_mux
     s       = mpegts_service_find(mm, service_id, 0, 1, &save);
     charset = dvb_charset_find(mn, mm, s);
 
-    if (s) {
-      if (!s->s_enabled && s->s_auto == SERVICE_AUTO_PAT_MISSING) {
-        tvhinfo("mpegts", "enabling service %s [sid %04X/%d] (found in SDT)",
-                s->s_nicename, s->s_dvb_service_id, s->s_dvb_service_id);
-        service_set_enabled((service_t *)s, 1, SERVICE_AUTO_NORMAL);
-      }
-      s->s_dvb_check_seen = dispatch_clock;
-    }
+    if (s)
+      dvb_service_autoenable(s, "SDT");
 
     /* Descriptor loop */
     DVB_DESC_EACH(lptr, llen, dtag, dlen, dptr) {
@@ -1627,10 +1634,12 @@ atsc_vct_callback
   uint16_t tsid, sid, type;
   uint16_t srcid;
   char chname[256];
+  const char *x;
   mpegts_mux_t     *mm = mt->mt_mux, *mm_orig = mm;
   mpegts_network_t *mn = mm->mm_network;
   mpegts_service_t *s;
   mpegts_psi_table_state_t *st  = NULL;
+  lang_str_t *ls;
 
   /* Validate */
   if (tableid != 0xc8 && tableid != 0xc9) return -1;
@@ -1678,8 +1687,30 @@ atsc_vct_callback
     LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link)
       if (mm->mm_tsid == tsid && (mm == mm_orig || mpegts_mux_alive(mm))) {
         /* Find the service */
+        save = 0;
         if (!(s = mpegts_service_find(mm, sid, 0, 1, &save)))
           continue;
+
+        for (j=0; j < dlen; ) {
+          unsigned int len, tag;
+          tag = ptr[32+j];
+          len = ptr[33+j];
+          if (tag == ATSC_DESC_EXT_CHANNEL_NAME) {
+            ls = atsc_get_string(ptr + 34 + j, len);
+            if (ls) {
+              x = lang_str_get(ls, NULL);
+              if (x == NULL)
+                x = lang_str_get(ls, "eng");
+              if (x)
+                snprintf(chname, sizeof(chname), "%s", x);
+              tvhdebug("vct", "  extended channel name: '%s' (%d bytes)", x, len);
+              lang_str_destroy(ls);
+            }
+          } else {
+            tvhdebug("vct", "  tag 0x%02x, len %d", tag, len);
+          }
+          j += len + 2;
+        }
 
         /* Update */
         if (strcmp(s->s_dvb_svcname ?: "", chname)) {
@@ -1694,20 +1725,6 @@ atsc_vct_callback
         if (s->s_atsc_source_id != srcid) {
           s->s_atsc_source_id = srcid;
           save = 1;
-        }
-        
-        for (j=0; j < dlen; ) {
-          unsigned int len, tag;
-          tag = ptr[32+j];
-          len = ptr[33+j];
-          if (tag == ATSC_DESC_EXT_CHANNEL_NAME) {
-            char extname[512];
-            atsc_get_string(extname, sizeof(extname), &ptr[34+j], len, "eng");
-            tvhdebug("vct", "  extended channel name: '%s' (%d bytes)", extname, len);
-          } else {
-            tvhdebug("vct", "  tag 0x%02x, len %d", tag, len);
-          }
-          j += len + 2;
         }
 
         /* Save */
@@ -2410,14 +2427,9 @@ psi_parse_pmt
       descrambler_caid_changed((service_t *)t);
   }
 
-  if (service_has_audio_or_video((service_t *)t)) {
-    t->s_dvb_check_seen = dispatch_clock;
-    if (!t->s_enabled && t->s_auto == SERVICE_AUTO_PAT_MISSING) {
-      tvhinfo("mpegts", "enabling service %s [sid %04X/%d] (found in PAT and PMT)",
-              t->s_nicename, t->s_dvb_service_id, t->s_dvb_service_id);
-      service_set_enabled((service_t *)t, 1, SERVICE_AUTO_NORMAL);
-    }
-  }
+  if (service_has_audio_or_video((service_t *)t))
+    dvb_service_autoenable(t, "PAT and PMT");
+
   return ret;
 }
 

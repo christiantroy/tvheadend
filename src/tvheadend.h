@@ -1,4 +1,4 @@
-﻿/*
+/*
  *  Tvheadend - structures
  *  Copyright (C) 2007 Andreas Öman
  *
@@ -84,6 +84,7 @@ typedef struct str_list
 } str_list_t;
 
 #define PTS_UNSET INT64_C(0x8000000000000000)
+#define PTS_MASK  INT64_C(0x00000001ffffffff)
 
 extern int tvheadend_running;
 
@@ -252,6 +253,8 @@ typedef enum {
 #define SCT_ISAUDIO(t) ((t) == SCT_MPEG2AUDIO || (t) == SCT_AC3 || \
                         (t) == SCT_AAC  || (t) == SCT_MP4A ||	   \
 			(t) == SCT_EAC3 || (t) == SCT_VORBIS)
+
+#define SCT_ISAV(t) (SCT_ISVIDEO(t) || SCT_ISAUDIO(t))
 
 #define SCT_ISSUBTITLE(t) ((t) == SCT_TEXTSUB || (t) == SCT_DVBSUB)
 
@@ -464,6 +467,7 @@ typedef enum {
 #define SM_CODE_NO_SOURCE                 206
 #define SM_CODE_NO_SERVICE                207
 #define SM_CODE_NO_VALID_ADAPTER          208
+#define SM_CODE_NO_ADAPTERS               209
 
 #define SM_CODE_ABORTED                   300
 
@@ -758,6 +762,11 @@ int rmtree ( const char *path );
 
 char *regexp_escape ( const char *str );
 
+#if ENABLE_ZLIB
+uint8_t *tvh_gzip_inflate ( const uint8_t *data, size_t size, size_t orig );
+uint8_t *tvh_gzip_deflate ( const uint8_t *data, size_t orig, size_t *size );
+#endif
+
 /* URL decoding */
 char to_hex(char code);
 char *url_encode(const char *str);
@@ -776,6 +785,8 @@ static inline uint32_t deltaU32(uint32_t a, uint32_t b) { return (a > b) ? (a - 
 #define SKEL_ALLOC(name) do { if (!name) name = calloc(1, sizeof(*name)); } while (0)
 #define SKEL_USED(name) do { name = NULL; } while (0)
 #define SKEL_FREE(name) do { free(name); name = NULL; } while (0)
+
+htsmsg_t *network_interfaces_enum(void *obj, const char *lang);
 
 /* glibc wrapper */
 #if ! ENABLE_QSORT_R

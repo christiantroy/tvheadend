@@ -131,7 +131,7 @@ mpegts_network_class_idlescan_notify ( void *p, const char *lang )
 const idclass_t mpegts_network_class =
 {
   .ic_class      = "mpegts_network",
-  .ic_caption    = N_("MPEG-TS Network"),
+  .ic_caption    = N_("MPEG-TS network"),
   .ic_event      = "mpegts_network",
   .ic_perm_def   = ACCESS_ADMIN,
   .ic_save       = mpegts_network_class_save,
@@ -140,9 +140,16 @@ const idclass_t mpegts_network_class =
     {
       .type     = PT_STR,
       .id       = "networkname",
-      .name     = N_("Network Name"),
+      .name     = N_("Network name"),
       .off      = offsetof(mpegts_network_t, mn_network_name),
       .notify   = idnode_notify_title_changed,
+    },
+    {
+      .type     = PT_STR,
+      .id       = "pnetworkname",
+      .name     = N_("Provider network name"),
+      .off      = offsetof(mpegts_network_t, mn_provider_network_name),
+      .opts     = PO_ADVANCED | PO_HIDDEN,
     },
     {
       .type     = PT_U16,
@@ -154,21 +161,21 @@ const idclass_t mpegts_network_class =
     {
       .type     = PT_BOOL,
       .id       = "autodiscovery",
-      .name     = N_("Network Discovery"),
+      .name     = N_("Network discovery"),
       .off      = offsetof(mpegts_network_t, mn_autodiscovery),
       .def.i    = 1
     },
     {
       .type     = PT_BOOL,
       .id       = "skipinitscan",
-      .name     = N_("Skip Initial Scan"),
+      .name     = N_("Skip initial scan"),
       .off      = offsetof(mpegts_network_t, mn_skipinitscan),
       .def.i    = 1
     },
     {
       .type     = PT_BOOL,
       .id       = "idlescan",
-      .name     = N_("Idle Scan Muxes"),
+      .name     = N_("Idle scan muxes"),
       .off      = offsetof(mpegts_network_t, mn_idlescan),
       .def.i    = 0,
       .notify   = mpegts_network_class_idlescan_notify,
@@ -177,14 +184,14 @@ const idclass_t mpegts_network_class =
     {
       .type     = PT_BOOL,
       .id       = "sid_chnum",
-      .name     = N_("Service IDs as Channel Numbers"),
+      .name     = N_("Use service IDs as channel numbers"),
       .off      = offsetof(mpegts_network_t, mn_sid_chnum),
       .def.i    = 0,
     },
     {
       .type     = PT_BOOL,
       .id       = "ignore_chnum",
-      .name     = N_("Ignore Provider's Channel Numbers"),
+      .name     = N_("Ignore provider's channel numbers"),
       .off      = offsetof(mpegts_network_t, mn_ignore_chnum),
       .def.i    = 0,
     },
@@ -192,14 +199,14 @@ const idclass_t mpegts_network_class =
     {
       .type     = PT_U16,
       .id       = "satip_source",
-      .name     = N_("SAT>IP Source Number"),
+      .name     = N_("SAT>IP source number"),
       .off      = offsetof(mpegts_network_t, mn_satip_source),
     },
 #endif
     {
       .type     = PT_STR,
       .id       = "charset",
-      .name     = N_("Character Set"),
+      .name     = N_("Character set"),
       .off      = offsetof(mpegts_network_t, mn_charset),
       .list     = dvb_charset_enum,
       .opts     = PO_ADVANCED,
@@ -207,7 +214,7 @@ const idclass_t mpegts_network_class =
     {
       .type     = PT_BOOL,
       .id       = "localtime",
-      .name     = N_("EIT Local Time"),
+      .name     = N_("EIT broadcast in local time"),
       .off      = offsetof(mpegts_network_t, mn_localtime),
       .opts     = PO_ADVANCED,
     },
@@ -228,14 +235,14 @@ const idclass_t mpegts_network_class =
     {
       .type     = PT_INT,
       .id       = "num_chn",
-      .name     = N_("# Mapped Channels"),
+      .name     = N_("# Mapped channels"),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .get      = mpegts_network_class_get_num_chn,
     },
     {
       .type     = PT_INT,
       .id       = "scanq_length",
-      .name     = N_("Scan Queue length"),
+      .name     = N_("Scan queue length"),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .get      = mpegts_network_class_get_scanq_length,
     },
@@ -412,13 +419,20 @@ mpegts_network_set_network_name
   ( mpegts_network_t *mn, const char *name )
 {
   char buf[256];
-  if (mn->mn_network_name) return 0;
-  if (!name || name[0] == '\0' || !strcmp(name, mn->mn_network_name ?: ""))
-    return 0;
-  tvh_str_update(&mn->mn_network_name, name);
-  mn->mn_display_name(mn, buf, sizeof(buf));
-  tvhdebug("mpegts", "%s - set name %s", buf, name);
-  return 1;
+  int save = 0;
+  if (mn->mn_network_name == NULL || mn->mn_network_name[0] == '\0') {
+    if (name && name[0] && strcmp(name, mn->mn_network_name ?: "")) {
+      tvh_str_update(&mn->mn_network_name, name);
+      mn->mn_display_name(mn, buf, sizeof(buf));
+      tvhdebug("mpegts", "%s - set name %s", buf, name);
+      save = 1;
+    }
+  }
+  if (strcmp(name ?: "", mn->mn_network_name ?: "")) {
+    tvh_str_update(&mn->mn_provider_network_name, name ?: "");
+    save = 1;
+  }
+  return save;
 }
 
 void

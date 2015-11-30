@@ -1418,7 +1418,7 @@ static void _epg_channel_timer_callback ( void *p )
 
   /* Clear now/next */
   if ((cur = ch->ch_epg_now)) {
-    if (cur->running) {
+    if (cur->running != EPG_RUNNING_STOP) {
       /* running? don't do anything */
       gtimer_arm(&ch->ch_epg_timer, _epg_channel_timer_callback, ch, 2);
       return;
@@ -1685,20 +1685,22 @@ epg_broadcast_t *epg_broadcast_find_by_eid ( channel_t *ch, uint16_t eid )
 }
 
 void epg_broadcast_notify_running
-  ( epg_broadcast_t *broadcast, epg_source_t esrc, int running )
+  ( epg_broadcast_t *broadcast, epg_source_t esrc, epg_running_t running )
 {
   channel_t *ch;
   epg_broadcast_t *now;
+  int orunning = broadcast->running;
 
-  broadcast->running = !!running;
-  if (!running) {
-    broadcast->stop = dispatch_clock - 1;
+  broadcast->running = running;
+  ch = broadcast->channel;
+  now = ch ? ch->ch_epg_now : NULL;
+  if (running == EPG_RUNNING_STOP) {
+    if (now == broadcast && orunning == broadcast->running)
+      broadcast->stop = dispatch_clock - 1;
   } else {
-    ch = broadcast->channel;
-    now = ch ? ch->ch_epg_now : NULL;
     if (broadcast != now && now) {
-      now->running = 0;
-      dvr_event_running(ch->ch_epg_now, esrc, 0);
+      now->running = EPG_RUNNING_STOP;
+      dvr_event_running(now, esrc, EPG_RUNNING_STOP);
     }
   }
   dvr_event_running(broadcast, esrc, running);
@@ -2069,11 +2071,11 @@ static const char **_epg_genre_names[16][16] = {
     C_{ N_("Water sport"), NULL },
   },
   { /* 05 */
-    C_{ N_("Children's / Youth programmes"), NULL },
-    C_{ N_("Pre-school children's programmes"), NULL },
-    C_{ N_("Entertainment programmes for 6 to 14"), NULL },
-    C_{ N_("Entertainment programmes for 10 to 16"), NULL },
-    C_{ N_("Informational"), N_("Educational"), N_("School programmes"), NULL },
+    C_{ N_("Children's / Youth programs"), NULL },
+    C_{ N_("Pre-school children's programs"), NULL },
+    C_{ N_("Entertainment programs for 6 to 14"), NULL },
+    C_{ N_("Entertainment programs for 10 to 16"), NULL },
+    C_{ N_("Informational"), N_("Educational"), N_("School programs"), NULL },
     C_{ N_("Cartoons"), N_("Puppets"), NULL },
     C_{ N_("Cartoons"), N_("Puppets"), NULL },
     C_{ N_("Cartoons"), N_("Puppets"), NULL },

@@ -92,7 +92,8 @@ channel_class_autoname_set ( void *obj, const void *p )
       free(ch->ch_name);
       ch->ch_name = strdup(s);
     } else if (b) {
-      ch->ch_name[0] = '\0';
+      if (ch->ch_name)
+        ch->ch_name[0] = '\0';
     }
     ch->ch_autoname = b;
     return 1;
@@ -327,6 +328,17 @@ channel_class_epg_parent_set ( void *o, const void *v )
   return save;
 }
 
+static htsmsg_t *
+channel_class_epg_running_list ( void *o, const char *lang )
+{
+  static const struct strtab tab[] = {
+    { N_("Not set"),   -1 },
+    { N_("Disabled"),   0 },
+    { N_("Enabled"),    1 },
+  };
+  return strtab2htsmsg(tab, 1, lang);
+}
+
 const idclass_t channel_class = {
   .ic_class      = "channel",
   .ic_caption    = N_("Channel"),
@@ -344,7 +356,7 @@ const idclass_t channel_class = {
     {
       .type     = PT_BOOL,
       .id       = "autoname",
-      .name     = N_("Auto Name"),
+      .name     = N_("Automatically name from network"),
       .off      = offsetof(channel_t, ch_autoname),
       .set      = channel_class_autoname_set,
       .opts     = PO_NOSAVE,
@@ -369,7 +381,7 @@ const idclass_t channel_class = {
     {
       .type     = PT_STR,
       .id       = "icon",
-      .name     = N_("User Icon"),
+      .name     = N_("User icon"),
       .off      = offsetof(channel_t, ch_icon),
       .notify   = channel_class_icon_notify,
     },
@@ -383,14 +395,14 @@ const idclass_t channel_class = {
     {
       .type     = PT_BOOL,
       .id       = "epgauto",
-      .name     = N_("Auto EPG Channel"),
+      .name     = N_("Automatically map EPG source"),
       .off      = offsetof(channel_t, ch_epgauto),
     },
     {
       .type     = PT_STR,
       .islist   = 1,
       .id       = "epggrab",
-      .name     = N_("EPG Source"),
+      .name     = N_("EPG source"),
       .set      = channel_class_epggrab_set,
       .get      = channel_class_epggrab_get,
       .list     = channel_class_epggrab_list,
@@ -399,22 +411,23 @@ const idclass_t channel_class = {
     {
       .type     = PT_INT,
       .id       = "dvr_pre_time",
-      .name     = N_("DVR Pre"), // TODO: better text?
+      .name     = N_("Pre-recording padding"), // TODO: better text?
       .off      = offsetof(channel_t, ch_dvr_extra_time_pre),
       .opts     = PO_ADVANCED
     },
     {
       .type     = PT_INT,
       .id       = "dvr_pst_time",
-      .name     = N_("DVR Post"), // TODO: better text?
+      .name     = N_("Post-recording padding"), // TODO: better text?
       .off      = offsetof(channel_t, ch_dvr_extra_time_post),
       .opts     = PO_ADVANCED
     },
     {
-      .type     = PT_BOOL,
+      .type     = PT_INT,
       .id       = "epg_running",
-      .name     = N_("Use EPG Running State"),
+      .name     = N_("Use EPG running state"),
       .off      = offsetof(channel_t, ch_epg_running),
+      .list     = channel_class_epg_running_list,
       .opts     = PO_ADVANCED
     },
     {
@@ -845,7 +858,7 @@ channel_create0
   ch->ch_enabled  = 1;
   ch->ch_autoname = 1;
   ch->ch_epgauto  = 1;
-  ch->ch_epg_running = 1;
+  ch->ch_epg_running = -1;
 
   if (conf) {
     ch->ch_load = 1;
@@ -1249,7 +1262,7 @@ channel_tag_class_get_list(void *o, const char *lang)
 
 const idclass_t channel_tag_class = {
   .ic_class      = "channeltag",
-  .ic_caption    = N_("Channel Tag"),
+  .ic_caption    = N_("Channel tag"),
   .ic_event      = "channeltag",
   .ic_save       = channel_tag_class_save,
   .ic_get_title  = channel_tag_class_get_title,
@@ -1264,7 +1277,7 @@ const idclass_t channel_tag_class = {
     {
       .type     = PT_U32,
       .id       = "index",
-      .name     = N_("Sort Index"),
+      .name     = N_("Sort index"),
       .off      = offsetof(channel_tag_t, ct_index),
     },
     {
