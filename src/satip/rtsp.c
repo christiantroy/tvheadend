@@ -21,6 +21,7 @@
 #include "htsbuf.h"
 #include "config.h"
 #include "profile.h"
+#include "streaming.h"
 #include "satip/server.h"
 #include "input/mpegts/iptv/iptv_private.h"
 
@@ -49,7 +50,9 @@ typedef struct session {
   int findex;
   int src;
   int state;
-  int shutdown_on_close;
+  int weight;
+  int used_weight;
+  http_connection_t *shutdown_on_close;
   int perm_lock;
   uint32_t nsession;
   char session[9];
@@ -71,6 +74,7 @@ typedef struct session {
 static uint32_t session_number;
 static uint16_t stream_id;
 static char *rtsp_ip = NULL;
+static char *rtsp_nat_ip = NULL;
 static int rtsp_port = -1;
 static int rtsp_descramble = 1;
 static int rtsp_rewrite_pmt = 0;
@@ -130,13 +134,13 @@ rtsp_delsys(int fe, int *findex)
     goto result;
   }
   fe -= i;
-  i = satip_server_conf.satip_atsc;
+  i = satip_server_conf.satip_atsc_t;
   if (fe <= i) {
     res = DVB_SYS_ATSC;
     goto result;
   }
   fe -= i;
-  i = satip_server_conf.satip_dvbcb;
+  i = satip_server_conf.satip_atsc_c;
   if (fe <= i) {
     res = DVB_SYS_DVBC_ANNEX_B;
     goto result;
@@ -248,7 +252,8 @@ rtsp_check_urlbase(char *u)
 #endif
   }
   if (strcmp(u, rtsp_ip))
-    return NULL;
+    if (rtsp_nat_ip == NULL || rtsp_nat_ip[0] == '\0' || strcmp(u, rtsp_nat_ip))
+      return NULL;
   return p ? p + 1 : u + strlen(u);
 }
 
@@ -484,9 +489,12 @@ rtsp_start
   mpegts_service_t *svc;
   dvb_mux_conf_t dmc;
   char buf[384];
-  int res = HTTP_STATUS_SERVICE, qsize = 3000000, created = 0;
+  int res = HTTP_STATUS_SERVICE, qsize = 3000000, created = 0, weight;
 
   pthread_mutex_lock(&global_lock);
+  weight = satip_server_conf.satip_weight;
+  if (satip_server_conf.satip_allow_remote_weight && rs->weight)
+    weight = rs->weight;
   dmc = rs->dmc_tuned;
   if (newmux) {
     mux = NULL;
@@ -547,8 +555,9 @@ rtsp_start
     rs->mux_created = created;
     if (profile_chain_raw_open(&rs->prch, (mpegts_mux_t *)rs->mux, qsize, 0))
       goto endclean;
+    rs->used_weight = weight;
     rs->subs = subscription_create_from_mux(&rs->prch, NULL,
-                                   satip_server_conf.satip_weight,
+                                   weight,
                                    "SAT>IP",
                                    rs->prch.prch_flags |
                                    SUBSCRIPTION_STREAMING,
@@ -573,14 +582,17 @@ pids:
     svc = (mpegts_service_t *)rs->subs->ths_raw_service;
     svc->s_update_pids(svc, &rs->pids);
     satip_rtp_update_pids((void *)(intptr_t)rs->stream, &rs->pids);
+    if (rs->used_weight != weight && weight > 0)
+      subscription_set_weight(rs->subs, rs->used_weight = weight);
   }
   if (!setup && rs->state != STATE_PLAY) {
     if (rs->mux == NULL)
       goto endclean;
     satip_rtp_queue((void *)(intptr_t)rs->stream,
                     rs->subs, &rs->prch.prch_sq,
-                    hc->hc_peer, rs->rtp_peer_port,
-                    rs->udp_rtp->fd, rs->udp_rtcp->fd,
+                    &hc->hc_fd_lock, hc->hc_peer, rs->rtp_peer_port,
+                    rs->udp_rtp ? rs->udp_rtp->fd : hc->hc_fd,
+                    rs->udp_rtcp ? rs->udp_rtcp->fd : -1,
                     rs->frontend, rs->findex, &rs->dmc_tuned,
                     &rs->pids, rs->perm_lock);
     if (!rs->pids.all && rs->pids.count == 0)
@@ -802,19 +814,24 @@ parse_transport(http_connection_t *hc)
   const char *s = http_arg_get(&hc->hc_args, "Transport");
   const char *u;
   int a, b;
-  if (!s || strncmp(s, "RTP/AVP;unicast;client_port=", 28))
+  if (!s)
     return -1;
-  for (s += 28, u = s; isdigit(*u); u++);
-  if (*u != '-')
-    return -1;
-  a = atoi(s);
-  for (s = ++u; isdigit(*s); s++);
-  if (*s != '\0' && *s != ';')
-    return -1;
-  b = atoi(u);
-  if (a + 1 != b)
-    return -1;
-  return a;
+  if (strncmp(s, "RTP/AVP;unicast;client_port=", 28) == 0) {
+    for (s += 28, u = s; isdigit(*u); u++);
+    if (*u != '-')
+      return -1;
+    a = atoi(s);
+    for (s = ++u; isdigit(*s); s++);
+    if (*s != '\0' && *s != ';')
+      return -1;
+    b = atoi(u);
+    if (a + 1 != b)
+      return -1;
+    return a;
+  } else if (strncmp(s, "RTP/AVP/TCP;interleaved=0-1", 27) == 0) {
+    return RTSP_TCP_DATA;
+  }
+  return -1;
 }
 
 /*
@@ -826,7 +843,7 @@ rtsp_parse_cmd
    session_t **rrs, int *valid, int *oldstate)
 {
   session_t *rs = NULL;
-  int errcode = HTTP_STATUS_BAD_REQUEST, r, findex = 0, has_args;
+  int errcode = HTTP_STATUS_BAD_REQUEST, r, findex = 0, has_args, weight = 0;
   int delsys = DVB_SYS_NONE, msys, fe, src, freq, pol, sr;
   int fec, ro, plts, bw, tmode, mtype, gi, plp, t2id, sm, c2tft, ds, specinv;
   char *s;
@@ -861,6 +878,7 @@ rtsp_parse_cmd
   msys = msys_to_tvh(hc);
   freq = atof(http_arg_get_remove(&hc->hc_req_args, "freq")) * 1000;
   *valid = freq >= 10000;
+  weight = atoi(http_arg_get_remove(&hc->hc_req_args, "tvhweight"));
 
   if (addpids.count > 0 || delpids.count > 0) {
     if (cmd)
@@ -1060,6 +1078,10 @@ rtsp_parse_cmd
   rs->delsys = delsys;
   rs->frontend = fe;
   rs->findex = findex;
+  if (weight > 0)
+    rs->weight = weight;
+  else if (cmd == 1)
+    rs->weight = 0;
   rs->old_hc = hc;
 
   if (cmd) {
@@ -1071,7 +1093,7 @@ rtsp_parse_cmd
   rs->src = src;
 
   if (cmd < 0)
-    rs->shutdown_on_close = 1;
+    rs->shutdown_on_close = hc;
 
 play:
   if (pids.count > 0)
@@ -1143,7 +1165,9 @@ rtsp_process_options(http_connection_t *hc)
   http_arg_set(&args, "Public", "OPTIONS,DESCRIBE,SETUP,PLAY,TEARDOWN");
   if (hc->hc_session)
     http_arg_set(&args, "Session", hc->hc_session);
+  pthread_mutex_lock(&hc->hc_fd_lock);
   http_send_header(hc, HTTP_STATUS_OK, NULL, 0, NULL, NULL, 0, NULL, NULL, &args);
+  pthread_mutex_unlock(&hc->hc_fd_lock);
   http_arg_flush(&args);
   return 0;
 
@@ -1281,9 +1305,11 @@ rtsp_process_describe(http_connection_t *hc)
   else
     snprintf(buf, sizeof(buf), "rtsp://%s", rtsp_ip);
   http_arg_set(&args, "Content-Base", buf);
+  pthread_mutex_lock(&hc->hc_fd_lock);
   http_send_header(hc, HTTP_STATUS_OK, "application/sdp", q.hq_size,
                    NULL, NULL, 0, NULL, NULL, &args);
   tcp_write_queue(hc->hc_fd, &q);
+  pthread_mutex_unlock(&hc->hc_fd_lock);
   http_arg_flush(&args);
   htsbuf_queue_flush(&q);
   return 0;
@@ -1319,7 +1345,7 @@ rtsp_process_play(http_connection_t *hc, int setup)
 
   if (errcode) goto error;
 
-  if (setup) {
+  if (setup && rs->rtp_peer_port != RTSP_TCP_DATA) {
     if (udp_bind_double(&rs->udp_rtp, &rs->udp_rtcp,
                         "satips", "rtsp", "rtcp",
                         rtsp_ip, 0, NULL,
@@ -1342,7 +1368,11 @@ rtsp_process_play(http_connection_t *hc, int setup)
     snprintf(buf, sizeof(buf), "%s;timeout=%d", rs->session, RTSP_TIMEOUT);
     http_arg_set(&args, "Session", buf);
     i = rs->rtp_peer_port;
-    snprintf(buf, sizeof(buf), "RTP/AVP;unicast;client_port=%d-%d", i, i+1);
+    if (i == RTSP_TCP_DATA) {
+      snprintf(buf, sizeof(buf), "RTP/AVP/TCP;interleaved=0-1");
+    } else {
+      snprintf(buf, sizeof(buf), "RTP/AVP;unicast;client_port=%d-%d", i, i+1);
+    }
     http_arg_set(&args, "Transport", buf);
     snprintf(buf, sizeof(buf), "%d", rs->stream);
     http_arg_set(&args, "com.ses.streamID", buf);
@@ -1356,7 +1386,9 @@ rtsp_process_play(http_connection_t *hc, int setup)
 
   pthread_mutex_unlock(&rtsp_lock);
 
+  pthread_mutex_lock(&hc->hc_fd_lock);
   http_send_header(hc, HTTP_STATUS_OK, NULL, 0, NULL, NULL, 0, NULL, NULL, &args);
+  pthread_mutex_unlock(&hc->hc_fd_lock);
 
   goto end;
 
@@ -1404,7 +1436,9 @@ rtsp_process_teardown(http_connection_t *hc)
     pthread_mutex_unlock(&rtsp_lock);
     http_arg_init(&args);
     http_arg_set(&args, "Session", session);
+    pthread_mutex_lock(&hc->hc_fd_lock);
     http_send_header(hc, HTTP_STATUS_OK, NULL, 0, NULL, NULL, 0, NULL, NULL, NULL);
+    pthread_mutex_unlock(&hc->hc_fd_lock);
     http_arg_flush(&args);
   }
   return 0;
@@ -1443,9 +1477,12 @@ rtsp_flush_requests(http_connection_t *hc)
   pthread_mutex_lock(&rtsp_lock);
   for (rs = TAILQ_FIRST(&rtsp_sessions); rs; rs = rs_next) {
     rs_next = TAILQ_NEXT(rs, link);
-    if (rs->shutdown_on_close) {
+    if (rs->shutdown_on_close == hc) {
       rtsp_close_session(rs);
       rtsp_free_session(rs);
+    } else {
+      if (rs->rtp_peer_port == RTSP_TCP_DATA)
+        satip_rtp_close((void *)(intptr_t)rs->stream);
     }
   }
   pthread_mutex_unlock(&rtsp_lock);
@@ -1562,7 +1599,8 @@ rtsp_close_sessions(void)
  *
  */
 void satip_server_rtsp_init
-  (const char *bindaddr, int port, int descramble, int rewrite_pmt, int muxcnf)
+  (const char *bindaddr, int port, int descramble, int rewrite_pmt, int muxcnf,
+   const char *nat_ip)
 {
   static tcp_server_ops_t ops = {
     .start  = rtsp_serve,
@@ -1571,6 +1609,7 @@ void satip_server_rtsp_init
   };
   int reg = 0;
   uint8_t rnd[4];
+  char *s;
   if (!rtsp_server) {
     uuid_random(rnd, sizeof(rnd));
     session_number = *(uint32_t *)rnd;
@@ -1584,14 +1623,18 @@ void satip_server_rtsp_init
     rtsp_server = NULL;
     reg = 1;
   }
-  free(rtsp_ip);
+  s = rtsp_ip;
   rtsp_ip = strdup(bindaddr);
+  free(s);
   rtsp_port = port;
   rtsp_descramble = descramble;
   rtsp_rewrite_pmt = rewrite_pmt;
   rtsp_muxcnf = muxcnf;
+  s = rtsp_nat_ip;
+  rtsp_nat_ip = nat_ip ? strdup(nat_ip) : NULL;
+  free(s);
   if (!rtsp_server)
-    rtsp_server = tcp_server_create(bindaddr, port, &ops, NULL);
+    rtsp_server = tcp_server_create("satips", "SAT>IP RTSP", bindaddr, port, &ops, NULL);
   if (reg)
     tcp_server_register(rtsp_server);
 }
@@ -1613,6 +1656,7 @@ void satip_server_rtsp_done(void)
   rtsp_server = NULL;
   rtsp_port = -1;
   free(rtsp_ip);
+  free(rtsp_nat_ip);
   rtsp_ip = NULL;
   satip_rtp_done();
   pthread_mutex_unlock(&global_lock);

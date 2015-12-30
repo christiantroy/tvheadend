@@ -337,7 +337,11 @@ epggrab_channel_t *epggrab_channel_create
     idnode_load(&ec->idnode, conf);
 
   TAILQ_INSERT_TAIL(&epggrab_channel_entries, ec, all_link);
-  if (RB_INSERT_SORTED(&owner->channels, ec, link, _ch_id_cmp)) abort();
+  if (RB_INSERT_SORTED(&owner->channels, ec, link, _ch_id_cmp)) {
+    tvherror("epggrab", "removing duplicate channel id '%s' (uuid '%s')", ec->id, uuid);
+    epggrab_channel_destroy(ec, 1, 0);
+    return NULL;
+  }
 
   return ec;
 }
@@ -386,25 +390,29 @@ epggrab_channel_t *epggrab_channel_find
 void epggrab_channel_save( epggrab_channel_t *ec )
 {
   htsmsg_t *m = htsmsg_create_map();
+  char ubuf[UUID_HEX_SIZE];
   idnode_save(&ec->idnode, m);
   hts_settings_save(m, "epggrab/%s/channels/%s",
-                    ec->mod->saveid, idnode_uuid_as_sstr(&ec->idnode));
+                    ec->mod->saveid, idnode_uuid_as_str(&ec->idnode, ubuf));
   htsmsg_destroy(m);
 }
 
-void epggrab_channel_destroy( epggrab_channel_t *ec, int delconf )
+void epggrab_channel_destroy( epggrab_channel_t *ec, int delconf, int rb_remove )
 {
+  char ubuf[UUID_HEX_SIZE];
+
   if (ec == NULL) return;
 
   /* Already linked */
   epggrab_channel_links_delete(ec, 0);
-  RB_REMOVE(&ec->mod->channels, ec, link);
+  if (rb_remove)
+    RB_REMOVE(&ec->mod->channels, ec, link);
   TAILQ_REMOVE(&epggrab_channel_entries, ec, all_link);
   idnode_unlink(&ec->idnode);
 
   if (delconf)
     hts_settings_remove("epggrab/%s/channels/%s",
-                        ec->mod->saveid, idnode_uuid_as_sstr(&ec->idnode));
+                        ec->mod->saveid, idnode_uuid_as_str(&ec->idnode, ubuf));
 
   htsmsg_destroy(ec->newnames);
   htsmsg_destroy(ec->names);
@@ -420,7 +428,7 @@ void epggrab_channel_flush
 {
   epggrab_channel_t *ec;
   while ((ec = RB_FIRST(&mod->channels)) != NULL)
-    epggrab_channel_destroy(ec, delconf);
+    epggrab_channel_destroy(ec, delconf, 1);
 }
 
 void epggrab_channel_begin_scan ( epggrab_module_t *mod )
@@ -539,7 +547,7 @@ epggrab_channel_class_save(idnode_t *self)
 static void
 epggrab_channel_class_delete(idnode_t *self)
 {
-  epggrab_channel_destroy((epggrab_channel_t *)self, 1);
+  epggrab_channel_destroy((epggrab_channel_t *)self, 1, 1);
 }
 
 static const void *
@@ -650,12 +658,20 @@ const idclass_t epggrab_channel_class = {
   .ic_save       = epggrab_channel_class_save,
   .ic_get_title  = epggrab_channel_class_get_title,
   .ic_delete     = epggrab_channel_class_delete,
+  .ic_groups     = (const property_group_t[]) {
+    {
+      .name   = N_("Configuration"),
+      .number = 1,
+    },
+    {}
+  },
   .ic_properties = (const property_t[]){
     {
       .type     = PT_BOOL,
       .id       = "enabled",
       .name     = N_("Enabled"),
       .off      = offsetof(epggrab_channel_t, enabled),
+      .group    = 1
     },
     {
       .type     = PT_STR,
@@ -664,6 +680,7 @@ const idclass_t epggrab_channel_class = {
       .get      = epggrab_channel_class_modid_get,
       .set      = epggrab_channel_class_modid_set,
       .opts     = PO_RDONLY | PO_HIDDEN,
+      .group    = 1
     },
     {
       .type     = PT_STR,
@@ -671,6 +688,7 @@ const idclass_t epggrab_channel_class = {
       .name     = N_("Module"),
       .get      = epggrab_channel_class_module_get,
       .opts     = PO_RDONLY | PO_NOSAVE,
+      .group    = 1
     },
     {
       .type     = PT_STR,
@@ -678,6 +696,7 @@ const idclass_t epggrab_channel_class = {
       .name     = N_("Path"),
       .get      = epggrab_channel_class_path_get,
       .opts     = PO_RDONLY | PO_NOSAVE,
+      .group    = 1
     },
     {
       .type     = PT_TIME,
@@ -685,18 +704,21 @@ const idclass_t epggrab_channel_class = {
       .name     = N_("Updated"),
       .off      = offsetof(epggrab_channel_t, laststamp),
       .opts     = PO_RDONLY | PO_NOSAVE,
+      .group    = 1
     },
     {
       .type     = PT_STR,
       .id       = "id",
       .name     = N_("ID"),
       .off      = offsetof(epggrab_channel_t, id),
+      .group    = 1
     },
     {
       .type     = PT_STR,
       .id       = "name",
       .name     = N_("Name"),
       .off      = offsetof(epggrab_channel_t, name),
+      .group    = 1
     },
     {
       .type     = PT_STR,
@@ -704,6 +726,7 @@ const idclass_t epggrab_channel_class = {
       .name     = N_("Names"),
       .get      = epggrab_channel_class_names_get,
       .set      = epggrab_channel_class_names_set,
+      .group    = 1
     },
     {
       .type     = PT_S64,
@@ -711,12 +734,14 @@ const idclass_t epggrab_channel_class = {
       .id       = "number",
       .name     = N_("Number"),
       .off      = offsetof(epggrab_channel_t, lcn),
+      .group    = 1
     },
     {
       .type     = PT_STR,
       .id       = "icon",
       .name     = N_("Icon"),
       .off      = offsetof(epggrab_channel_t, icon),
+      .group    = 1
     },
     {
       .type     = PT_STR,
@@ -727,6 +752,7 @@ const idclass_t epggrab_channel_class = {
       .get      = epggrab_channel_class_channels_get,
       .list     = channel_class_get_list,
       .rend     = epggrab_channel_class_channels_rend,
+      .group    = 1
     },
     {
       .type     = PT_BOOL,
@@ -734,12 +760,14 @@ const idclass_t epggrab_channel_class = {
       .name     = N_("Only one auto channel"),
       .off      = offsetof(epggrab_channel_t, only_one),
       .notify   = epggrab_channel_class_only_one_notify,
+      .group    = 1
     },
     {
       .type     = PT_STR,
       .id       = "comment",
       .name     = N_("Comment"),
-      .off      = offsetof(epggrab_channel_t, comment)
+      .off      = offsetof(epggrab_channel_t, comment),
+      .group    = 1
     },
     {}
   }

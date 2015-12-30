@@ -45,14 +45,14 @@ static void
 satip_device_dbus_notify( satip_device_t *sd, const char *sig_name )
 {
 #if ENABLE_DBUS_1
-  char buf[256];
+  char buf[256], ubuf[UUID_HEX_SIZE];
 
   htsmsg_t *msg = htsmsg_create_list();
   htsmsg_add_str(msg, NULL, sd->sd_info.addr);
   htsmsg_add_str(msg, NULL, sd->sd_info.location);
   htsmsg_add_str(msg, NULL, sd->sd_info.server);
   htsmsg_add_s64(msg, NULL, sd->sd_info.rtsp_port);
-  snprintf(buf, sizeof(buf), "/input/mpegts/satip/%s", idnode_uuid_as_sstr(&sd->th_id));
+  snprintf(buf, sizeof(buf), "/input/mpegts/satip/%s", idnode_uuid_as_str(&sd->th_id, ubuf));
   dbus_emit_signal(buf, sig_name, msg);
 #endif
 }
@@ -201,6 +201,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "tunercfgu",
       .name     = N_("Tuner configuration"),
+      .desc     = N_("Tuner configuration."),
       .opts     = PO_SORTKEY,
       .off      = offsetof(satip_device_t, sd_tunercfg),
       .list     = satip_device_class_tunercfg_list,
@@ -211,6 +212,7 @@ const idclass_t satip_device_class =
       .type     = PT_BOOL,
       .id       = "tcp_mode",
       .name     = N_("RTSP/TCP (embedded data)"),
+      .desc     = N_("Enable or disable RTSP/TCP (embedded data) support."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_device_t, sd_tcp_mode),
     },
@@ -218,6 +220,7 @@ const idclass_t satip_device_class =
       .type     = PT_BOOL,
       .id       = "fast_switch",
       .name     = N_("Fast input switch"),
+      .desc     = N_("Enable or disable fast input switching."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_device_t, sd_fast_switch),
     },
@@ -225,6 +228,7 @@ const idclass_t satip_device_class =
       .type     = PT_BOOL,
       .id       = "fullmux_ok",
       .name     = N_("Full mux RX mode supported"),
+      .desc     = N_("Enable or disable full mux mode."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_device_t, sd_fullmux_ok),
     },
@@ -232,6 +236,9 @@ const idclass_t satip_device_class =
       .type     = PT_INT,
       .id       = "sigscale",
       .name     = N_("Signal scale (240 or 100)"),
+      .desc     = N_("Not all SAT>IP servers use the same signal scaling. "
+                     "Change this setting if the signal level displayed "
+                     "within Tvheadend looks too low."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_device_t, sd_sig_scale),
     },
@@ -239,6 +246,8 @@ const idclass_t satip_device_class =
       .type     = PT_INT,
       .id       = "pids_max",
       .name     = N_("Maximum PIDs"),
+      .desc     = N_("Set the maxiumum packet identifiers your SAT>IP "
+                     "server supports."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_device_t, sd_pids_max),
     },
@@ -246,6 +255,8 @@ const idclass_t satip_device_class =
       .type     = PT_INT,
       .id       = "pids_len",
       .name     = N_("Maximum length of PIDs"),
+      .desc     = N_("Maximum length in characters for the command "
+                     "setting PIDs to the SAT>IP box."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_device_t, sd_pids_len),
     },
@@ -253,6 +264,8 @@ const idclass_t satip_device_class =
       .type     = PT_BOOL,
       .id       = "pids_deladd",
       .name     = N_("addpids/delpids supported"),
+      .desc     = N_("Enable if the SAT>IP box supports the "
+                     "addpids/delpids commands."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_device_t, sd_pids_deladd),
     },
@@ -260,6 +273,8 @@ const idclass_t satip_device_class =
       .type     = PT_BOOL,
       .id       = "pids0",
       .name     = N_("PIDs in setup"),
+      .desc     = N_("Enable if the SAT>IP box requires pids=0 parameter "
+                     "in the SETUP RTSP command."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_device_t, sd_pids0),
     },
@@ -267,6 +282,9 @@ const idclass_t satip_device_class =
       .type     = PT_BOOL,
       .id       = "piloton",
       .name     = N_("Force pilot for DVB-S2"),
+      .desc     = N_("Enable if the SAT>IP box requests plts=on "
+                     "parameter in the SETUP RTSP command for DVB-S2 "
+                     "muxes."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_device_t, sd_pilot_on),
     },
@@ -274,6 +292,8 @@ const idclass_t satip_device_class =
       .type     = PT_BOOL,
       .id       = "pids21",
       .name     = N_("PIDs 21 in setup"),
+      .desc     = N_("Enable if the SAT>IP box requires pids=21 "
+                     "parameter in the SETUP RTSP command"),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_device_t, sd_pids21),
     },
@@ -281,6 +301,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "bindaddr",
       .name     = N_("Local bind IP address"),
+      .desc     = N_("Bind to specific local IP address."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_device_t, sd_bindaddr),
     },
@@ -288,6 +309,7 @@ const idclass_t satip_device_class =
       .type     = PT_INT,
       .id       = "skip_ts",
       .name     = N_("Skip TS packets (0-200)"),
+      .desc     = N_("Skip x number of transport packets."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_device_t, sd_skip_ts),
     },
@@ -302,6 +324,10 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "addr",
       .name     = N_("IP address"),
+      .desc     = N_("Force all network connections to this tuner to be "
+                     "made over the specified IP address, similar to "
+                     "the setting for the SAT>IP device itself. Setting "
+                     "this overrides the device-specific setting."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.addr),
     },
@@ -309,6 +335,7 @@ const idclass_t satip_device_class =
       .type     = PT_INT,
       .id       = "rtsp",
       .name     = N_("RTSP port"),
+      .desc     = N_("Current RTSP port."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.rtsp_port),
     },
@@ -316,6 +343,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "device_uuid",
       .name     = N_("UUID"),
+      .desc     = N_("The SAT>IP server's universally unique identifier."),
       .opts     = PO_RDONLY,
       .off      = offsetof(satip_device_t, sd_info.uuid),
     },
@@ -323,6 +351,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "friendly",
       .name     = N_("Friendly name"),
+      .desc     = N_("The SAT>IP server's name."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.friendlyname),
     },
@@ -330,6 +359,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "serialnum",
       .name     = N_("Serial number"),
+      .desc     = N_("The device's serial number."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.serialnum),
     },
@@ -337,6 +367,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "tunercfg",
       .name     = N_("Tuner configuration"),
+      .desc     = N_("Current tuner configuration."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.tunercfg),
     },
@@ -344,6 +375,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "manufacturer",
       .name     = N_("Manufacturer"),
+      .name     = N_("The manufacturer of the SAT>IP server."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.manufacturer),
     },
@@ -351,6 +383,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "manufurl",
       .name     = N_("Manufacturer URL"),
+      .desc     = N_("Manufacturer's product information page for the device."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.manufacturerURL),
     },
@@ -358,6 +391,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "modeldesc",
       .name     = N_("Model description"),
+      .desc     = N_("Manufacturer's product description."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.modeldesc),
     },
@@ -365,6 +399,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "modelname",
       .name     = N_("Model name"),
+      .desc     = N_("Manufacturer's product name."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.modelname),
     },
@@ -372,6 +407,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "modelnum",
       .name     = N_("Model number"),
+      .desc     = N_("Manufacturer's model number."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.modelnum),
     },
@@ -379,6 +415,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "bootid",
       .name     = N_("Boot ID"),
+      .desc     = N_("The current boot ID."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.bootid),
     },
@@ -386,6 +423,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "configid",
       .name     = N_("Configuration ID"),
+      .desc     = N_("The current configuration ID."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.configid),
     },
@@ -393,6 +431,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "deviceid",
       .name     = N_("Device ID"),
+      .desc     = N_("The device ID."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.deviceid),
     },
@@ -400,6 +439,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "presentation",
       .name     = N_("Presentation"),
+      .desc     = N_("Presentation details."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.presentation),
     },
@@ -407,6 +447,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "location",
       .name     = N_("Location"),
+      .desc     = N_("Location details of the SAT>IP Server."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.location),
     },
@@ -414,6 +455,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "server",
       .name     = N_("Server"),
+      .desc     = N_("Server details."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.server),
     },
@@ -421,6 +463,7 @@ const idclass_t satip_device_class =
       .type     = PT_STR,
       .id       = "myaddr",
       .name     = N_("Local discovery IP address"),
+      .desc     = N_("The SAT>IP's discovered IP address."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_device_t, sd_info.myaddr),
     },
@@ -475,6 +518,8 @@ satip_device_hack( satip_device_t *sd )
     sd->sd_pids_max    = 128;
     sd->sd_pids_len    = 2048;
     sd->sd_no_univ_lnb = 1;
+    if (strcmp(sd->sd_info.modelnum ?: "", "1.0"))
+      sd->sd_can_weight  = 1;
   } else if (strstr(sd->sd_info.manufacturer, "AVM Berlin") &&
              strstr(sd->sd_info.modelname, "FRITZ!")) {
     sd->sd_fullmux_ok  = 0;
@@ -587,12 +632,12 @@ satip_device_create( satip_device_info_t *info )
     } else if (strncmp(argv[i], "DVBC-", 5) == 0) {
       type = DVB_TYPE_C;
       m = atoi(argv[i] + 5);
-    } else if (strncmp(argv[i], "ATSC-", 5) == 0) {
-      type = DVB_TYPE_ATSC;
+    } else if (strncmp(argv[i], "ATSCT-", 5) == 0) {
+      type = DVB_TYPE_ATSC_T;
       m = atoi(argv[i] + 5);
-    } else if (strncmp(argv[i], "DVBCB-", 6) == 0) {
+    } else if (strncmp(argv[i], "ATSCC-", 6) == 0) {
+      type = DVB_TYPE_ATSC_C;
       m = atoi(argv[i] + 6);
-      v2 = 2;
     }
     if (type == DVB_TYPE_NONE) {
       tvhlog(LOG_ERR, "satip", "%s: bad tuner type [%s]",
@@ -654,6 +699,7 @@ satip_device_save( satip_device_t *sd )
 {
   satip_frontend_t *lfe;
   htsmsg_t *m, *l;
+  char ubuf[UUID_HEX_SIZE];
 
   if (sd->sd_nosave)
     return;
@@ -667,7 +713,7 @@ satip_device_save( satip_device_t *sd )
   htsmsg_add_msg(m, "frontends", l);
 
   hts_settings_save(m, "input/satip/adapters/%s",
-                    idnode_uuid_as_sstr(&sd->th_id));
+                    idnode_uuid_as_str(&sd->th_id, ubuf));
   htsmsg_destroy(m);
 }
 

@@ -218,7 +218,7 @@ static const char *cachemonths[12] = {
  * Transmit a HTTP reply
  */
 void
-http_send_header(http_connection_t *hc, int rc, const char *content, 
+http_send_header(http_connection_t *hc, int rc, const char *content,
 		 int64_t contentlen,
 		 const char *encoding, const char *location, 
 		 int maxage, const char *range,
@@ -230,6 +230,8 @@ http_send_header(http_connection_t *hc, int rc, const char *content,
   http_arg_t *ra;
   time_t t;
   int sess = 0;
+
+  lock_assert(&hc->hc_fd_lock);
 
   htsbuf_queue_init(&hdrs, 0);
 
@@ -379,6 +381,7 @@ http_send_reply(http_connection_t *hc, int rc, const char *content,
   }
 #endif
 
+  pthread_mutex_lock(&hc->hc_fd_lock);
   http_send_header(hc, rc, content, size,
 		   encoding, location, maxage, 0, NULL, NULL);
   
@@ -388,6 +391,7 @@ http_send_reply(http_connection_t *hc, int rc, const char *content,
     else
       tvh_write(hc->hc_fd, data, size);
   }
+  pthread_mutex_unlock(&hc->hc_fd_lock);
 
   free(data);
 }
@@ -1096,6 +1100,7 @@ http_serve_requests(http_connection_t *hc)
   char *argv[3], *c, *cmdline = NULL, *hdrline = NULL;
   int n, r;
 
+  pthread_mutex_init(&hc->hc_fd_lock, NULL);
   http_arg_init(&hc->hc_args);
   http_arg_init(&hc->hc_req_args);
   htsbuf_queue_init(&spill, 0);
@@ -1218,7 +1223,7 @@ http_server_init(const char *bindaddr)
     .stop   = NULL,
     .cancel = http_cancel
   };
-  http_server = tcp_server_create(bindaddr, tvheadend_webui_port, &ops, NULL);
+  http_server = tcp_server_create("http", "HTTP", bindaddr, tvheadend_webui_port, &ops, NULL);
 }
 
 void

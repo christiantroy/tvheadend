@@ -29,6 +29,16 @@ struct strtab {
   int val;
 };
 
+struct strtab_u32 {
+  const char *str;
+  uint32_t val;
+};
+
+struct strtab_str {
+  const char *str;
+  const char *val;
+};
+
 static int str2val0(const char *str, const struct strtab tab[], int l)
      __attribute((unused));
 
@@ -95,5 +105,37 @@ strtab2htsmsg0(const struct strtab tab[], int n, int i18n, const char *lang)
 }
 
 #define strtab2htsmsg(tab,i18n,lang) strtab2htsmsg0(tab, sizeof(tab) / sizeof(tab[0]), i18n, lang)
+
+static inline htsmsg_t *
+strtab2htsmsg0_u32(const struct strtab_u32 tab[], uint32_t n, int i18n, const char *lang)
+{
+  uint32_t i;
+  htsmsg_t *e, *l = htsmsg_create_list();
+  for (i = 0; i < n; i++) {
+    e = htsmsg_create_map();
+    htsmsg_add_u32(e, "key", tab[i].val);
+    htsmsg_add_str(e, "val", i18n ? tvh_gettext_lang(lang, tab[i].str) : tab[i].str);
+    htsmsg_add_msg(l, NULL, e);
+  }
+  return l;
+}
+
+#define strtab2htsmsg_u32(tab,i18n,lang) strtab2htsmsg0_u32(tab, sizeof(tab) / sizeof(tab[0]), i18n, lang)
+
+static inline htsmsg_t *
+strtab2htsmsg0_str(const struct strtab_str tab[], uint32_t n, int i18n, const char *lang)
+{
+  uint32_t i;
+  htsmsg_t *e, *l = htsmsg_create_list();
+  for (i = 0; i < n; i++) {
+    e = htsmsg_create_map();
+    htsmsg_add_str(e, "key", tab[i].val);
+    htsmsg_add_str(e, "val", i18n ? tvh_gettext_lang(lang, tab[i].str) : tab[i].str);
+    htsmsg_add_msg(l, NULL, e);
+  }
+  return l;
+}
+
+#define strtab2htsmsg_str(tab,i18n,lang) strtab2htsmsg0_str(tab, sizeof(tab) / sizeof(tab[0]), i18n, lang)
 
 #endif /* STRTAB_H_ */

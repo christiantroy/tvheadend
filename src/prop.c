@@ -271,7 +271,8 @@ prop_read_value
   /* List */
   if (p->islist) {
     assert(p->get); /* requirement */
-    htsmsg_add_msg(m, name, (htsmsg_t*)val);
+    if (val)
+      htsmsg_add_msg(m, name, (htsmsg_t*)val);
   
   /* Single */
   } else {
@@ -415,6 +416,8 @@ prop_serialize_value
 
   /* Metadata */
   htsmsg_add_str(m, "caption",  tvh_gettext_lang(lang, pl->name));
+  if (pl->desc)
+    htsmsg_add_str(m, "description", tvh_gettext_lang(lang, pl->desc));
   if (pl->islist) {
     htsmsg_add_u32(m, "list", 1);
     if (pl->def.list)
@@ -466,8 +469,12 @@ prop_serialize_value
     htsmsg_add_bool(m, "nosave", 1);
   if (opts & PO_WRONCE)
     htsmsg_add_bool(m, "wronce", 1);
-  if (opts & PO_ADVANCED)
+  if (opts & PO_EXPERT)
+    htsmsg_add_bool(m, "expert", 1);
+  else if (opts & PO_ADVANCED)
     htsmsg_add_bool(m, "advanced", 1);
+  if (opts & PO_NOUI)
+    htsmsg_add_bool(m, "noui", 1);
   if (opts & PO_HIDDEN)
     htsmsg_add_bool(m, "hidden", 1);
   if (opts & PO_PASSWORD)

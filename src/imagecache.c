@@ -16,6 +16,7 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#define _GNU_SOURCE
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
@@ -82,24 +83,34 @@ const idclass_t imagecache_class = {
       .type   = PT_BOOL,
       .id     = "enabled",
       .name   = N_("Enabled"),
+      .desc   = N_("Select whether or not to enable caching. Note: "
+                   "even with this disabled you can still specify "
+                   "local (file://) icons and these will be served by "
+                   "the built-in webserver."),
       .off    = offsetof(struct imagecache_config, enabled),
     },
     {
       .type   = PT_BOOL,
       .id     = "ignore_sslcert",
       .name   = N_("Ignore invalid SSL certificate"),
+      .desc   = N_("Ignore invalid/unverifiable (expired, "
+                   "self-certified, etc.) certificates"),
       .off    = offsetof(struct imagecache_config, ignore_sslcert),
     },
     {
       .type   = PT_U32,
       .id     = "ok_period",
       .name   = N_("Re-fetch period (hours)"),
+      .desc   = N_("How frequently the upstream provider is checked "
+                   "for changes."),
       .off    = offsetof(struct imagecache_config, ok_period),
     },
     {
       .type   = PT_U32,
       .id     = "fail_period",
       .name   = N_("Re-try period (hours)"),
+      .desc   = N_("How frequently it will re-try fetching an image "
+                   "that has failed to be fetched."),
       .off    = offsetof(struct imagecache_config, fail_period),
     },
     {}
@@ -627,6 +638,7 @@ int
 imagecache_open ( uint32_t id )
 {
   imagecache_image_t skel, *i;
+  char *fn;
   int fd = -1;
 
   lock_assert(&global_lock);
@@ -637,8 +649,11 @@ imagecache_open ( uint32_t id )
     return -1;
 
   /* Local file */
-  if (!strncasecmp(i->url, "file://", 7))
-    fd = open(i->url + 7, O_RDONLY);
+  if (!strncasecmp(i->url, "file://", 7)) {
+    fn = strdupa(i->url + 7);
+    http_deescape(fn);
+    fd = open(fn, O_RDONLY);
+  }
 
   /* Remote file */
 #if ENABLE_IMAGECACHE

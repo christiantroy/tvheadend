@@ -423,7 +423,7 @@ static int tvhdhomerun_frontend_tune(tvhdhomerun_frontend_t *hfe, mpegts_mux_ins
 
 static int
 tvhdhomerun_frontend_start_mux
-  ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi )
+  ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int weight )
 {
   tvhdhomerun_frontend_t *hfe = (tvhdhomerun_frontend_t*)mi;
   int res, r;
@@ -521,13 +521,13 @@ tvhdhomerun_frontend_class_save ( idnode_t *in )
 void
 tvhdhomerun_frontend_save ( tvhdhomerun_frontend_t *hfe, htsmsg_t *fe )
 {
-  char id[16];
+  char id[16], ubuf[UUID_HEX_SIZE];
   htsmsg_t *m = htsmsg_create_map();
 
   /* Save frontend */
   mpegts_input_save((mpegts_input_t*)hfe, m);
   htsmsg_add_str(m, "type", dvb_type2str(hfe->hf_type));
-  htsmsg_add_str(m, "uuid", idnode_uuid_as_sstr(&hfe->ti_id));
+  htsmsg_add_str(m, "uuid", idnode_uuid_as_str(&hfe->ti_id, ubuf));
 
   /* Add to list */
   snprintf(id, sizeof(id), "%s #%d", dvb_type2str(hfe->hf_type), hfe->hf_tunerNumber);
@@ -573,11 +573,21 @@ const idclass_t tvhdhomerun_frontend_dvbc_class =
   }
 };
 
-const idclass_t tvhdhomerun_frontend_atsc_class =
+const idclass_t tvhdhomerun_frontend_atsc_t_class =
 {
   .ic_super      = &tvhdhomerun_frontend_class,
-  .ic_class      = "tvhdhomerun_frontend_atsc",
-  .ic_caption    = N_("HDHomeRun ATSC frontend"),
+  .ic_class      = "tvhdhomerun_frontend_atsc_t",
+  .ic_caption    = N_("HDHomeRun ATSC-T frontend"),
+  .ic_properties = (const property_t[]){
+    {}
+  }
+};
+
+const idclass_t tvhdhomerun_frontend_atsc_c_class =
+{
+  .ic_super      = &tvhdhomerun_frontend_class,
+  .ic_class      = "tvhdhomerun_frontend_atsc_c",
+  .ic_caption    = N_("HDHomeRun ATSC-C frontend"),
   .ic_properties = (const property_t[]){
     {}
   }
@@ -626,9 +636,11 @@ tvhdhomerun_frontend_create(tvhdhomerun_device_t *hd, struct hdhomerun_discover_
     idc = &tvhdhomerun_frontend_dvbt_class;
   else if (type == DVB_TYPE_C)
     idc = &tvhdhomerun_frontend_dvbc_class;
-  else if (type == DVB_TYPE_ATSC) {
-    idc = &tvhdhomerun_frontend_atsc_class;
-  } else {
+  else if (type == DVB_TYPE_ATSC_T)
+    idc = &tvhdhomerun_frontend_atsc_t_class;
+  else if (type == DVB_TYPE_ATSC_C)
+    idc = &tvhdhomerun_frontend_atsc_c_class;
+  else {
     tvherror("stvhdhomerun", "unknown FE type %d", type);
     return NULL;
   }

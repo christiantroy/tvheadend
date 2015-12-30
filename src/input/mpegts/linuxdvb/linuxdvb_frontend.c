@@ -148,7 +148,7 @@ const idclass_t linuxdvb_frontend_dvbt_class =
     {
       .type     = PT_BOOL,
       .id       = "lna",
-      .name     = N_("LNA (Low noise amplifier)"),
+      .name     = N_("LNA (low noise amplifier)"),
       .off      = offsetof(linuxdvb_frontend_t, lfe_lna),
     },
     {}
@@ -195,6 +195,7 @@ linuxdvb_frontend_dvbs_class_master_enum( void * self, const char *lang )
   linuxdvb_frontend_t *lfe = self, *lfe2;
   linuxdvb_adapter_t *la;
   tvh_hardware_t *th;
+  char ubuf[UUID_HEX_SIZE];
   htsmsg_t *m = htsmsg_create_list();
   htsmsg_t *e = htsmsg_create_map();
   htsmsg_add_str(e, "key", "");
@@ -206,7 +207,7 @@ linuxdvb_frontend_dvbs_class_master_enum( void * self, const char *lang )
     LIST_FOREACH(lfe2, &la->la_frontends, lfe_link) {
       if (lfe2 != lfe && lfe2->lfe_type == lfe->lfe_type) {
         e = htsmsg_create_map();
-        htsmsg_add_str(e, "key", idnode_uuid_as_sstr(&lfe2->ti_id));
+        htsmsg_add_str(e, "key", idnode_uuid_as_str(&lfe2->ti_id, ubuf));
         htsmsg_add_str(e, "val", lfe2->mi_name);
         htsmsg_add_msg(m, NULL, e);
       }
@@ -278,11 +279,21 @@ const idclass_t linuxdvb_frontend_dvbc_class =
   }
 };
 
-const idclass_t linuxdvb_frontend_atsc_class =
+const idclass_t linuxdvb_frontend_atsc_t_class =
 {
   .ic_super      = &linuxdvb_frontend_class,
-  .ic_class      = "linuxdvb_frontend_atsc",
-  .ic_caption    = N_("Linux ATSC frontend"),
+  .ic_class      = "linuxdvb_frontend_atsc_t",
+  .ic_caption    = N_("Linux ATSC-T frontend"),
+  .ic_properties = (const property_t[]){
+    {}
+  }
+};
+
+const idclass_t linuxdvb_frontend_atsc_c_class =
+{
+  .ic_super      = &linuxdvb_frontend_class,
+  .ic_class      = "linuxdvb_frontend_atsc_c",
+  .ic_caption    = N_("Linux ATSC-C frontend"),
   .ic_properties = (const property_t[]){
     {}
   }
@@ -360,6 +371,7 @@ linuxdvb_frontend_is_enabled ( mpegts_input_t *mi, mpegts_mux_t *mm, int flags )
   linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)mi, *lfe2;
   linuxdvb_adapter_t *la;
   tvh_hardware_t *th;
+  char ubuf[UUID_HEX_SIZE];
 
   if (lfe->lfe_fe_path == NULL) return 0;
   if (!mpegts_input_is_enabled(mi, mm, flags)) return 0;
@@ -374,13 +386,13 @@ linuxdvb_frontend_is_enabled ( mpegts_input_t *mi, mpegts_mux_t *mm, int flags )
     LIST_FOREACH(lfe2, &la->la_frontends, lfe_link) {
       if (lfe2 == lfe) continue;
       if (lfe2->lfe_type != DVB_TYPE_S) continue;
-      if (lfe->lfe_master && !strcmp(lfe->lfe_master, idnode_uuid_as_sstr(&lfe2->ti_id))) {
+      if (lfe->lfe_master && !strcmp(lfe->lfe_master, idnode_uuid_as_str(&lfe2->ti_id, ubuf))) {
         if (lfe2->lfe_satconf == NULL)
           return 0; /* invalid master */
         return linuxdvb_satconf_match_mux(lfe2->lfe_satconf, mm);
       }
       if (lfe2->lfe_master &&
-          !strcmp(lfe2->lfe_master, idnode_uuid_as_sstr(&lfe->ti_id)) &&
+          !strcmp(lfe2->lfe_master, idnode_uuid_as_str(&lfe->ti_id, ubuf)) &&
           lfe2->lfe_refcount > 0) {
         if (lfe->lfe_satconf == NULL)
           return 0;
@@ -455,7 +467,7 @@ linuxdvb_frontend_stop_mux
 
 static int
 linuxdvb_frontend_start_mux
-  ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi )
+  ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int weight )
 {
   linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)mi, *lfe2;
   int res, f;
@@ -628,7 +640,7 @@ linuxdvb_frontend_monitor ( void *aux )
              (fe_status & FE_HAS_CARRIER) ? " | CARRIER" : "",
              (fe_status & FE_HAS_VITERBI) ? " | VITERBI" : "",
              (fe_status & FE_HAS_SYNC) ?    " | SYNC"    : "",
-             (fe_status & FE_HAS_LOCK) ?    " | SIGNAL"  : "",
+             (fe_status & FE_HAS_LOCK) ?    " | LOCK"  : "",
              (fe_status & FE_TIMEDOUT) ?    "TIMEOUT" : "");
   } else {
     tvhtrace("linuxdvb", "%s - status %d (%04X)", buf, status, fe_status);
@@ -1451,6 +1463,7 @@ linuxdvb_frontend_tune0
 #undef _OFDM
     break;
   case DVB_TYPE_C:
+  case DVB_TYPE_ATSC_C:
     p.u.qam.symbol_rate      = dmc->u.dmc_fe_qam.symbol_rate;
     p.u.qam.fec_inner        = TRU(qam.fec_inner, fec_tbl, FEC_AUTO);
     p.u.qam.modulation       = TR(modulation, mod_tbl, QAM_AUTO);
@@ -1459,7 +1472,7 @@ linuxdvb_frontend_tune0
     p.u.qpsk.symbol_rate     = dmc->u.dmc_fe_qpsk.symbol_rate;
     p.u.qpsk.fec_inner       = TRU(qpsk.fec_inner, fec_tbl, FEC_AUTO);
     break;
-  case DVB_TYPE_ATSC:
+  case DVB_TYPE_ATSC_T:
     p.u.vsb.modulation       = TR(modulation, mod_tbl, QAM_AUTO);
     break;
   default:
@@ -1676,8 +1689,10 @@ linuxdvb_frontend_create
     idc = &linuxdvb_frontend_dvbc_class;
   else if (type == DVB_TYPE_T)
     idc = &linuxdvb_frontend_dvbt_class;
-  else if (type == DVB_TYPE_ATSC)
-    idc = &linuxdvb_frontend_atsc_class;
+  else if (type == DVB_TYPE_ATSC_T)
+    idc = &linuxdvb_frontend_atsc_t_class;
+  else if (type == DVB_TYPE_ATSC_C)
+    idc = &linuxdvb_frontend_atsc_c_class;
   else {
     tvherror("linuxdvb", "unknown FE type %d", type);
     return NULL;
@@ -1754,17 +1769,17 @@ linuxdvb_frontend_create
 void
 linuxdvb_frontend_save ( linuxdvb_frontend_t *lfe, htsmsg_t *fe )
 {
-  char id[16];
+  char id[16], ubuf[UUID_HEX_SIZE];
   htsmsg_t *m = htsmsg_create_map();
 
   /* Save frontend */
   mpegts_input_save((mpegts_input_t*)lfe, m);
   htsmsg_add_str(m, "type", dvb_type2str(lfe->lfe_type));
-  htsmsg_add_str(m, "uuid", idnode_uuid_as_sstr(&lfe->ti_id));
+  htsmsg_add_str(m, "uuid", idnode_uuid_as_str(&lfe->ti_id, ubuf));
   if (lfe->lfe_satconf && !lfe->lfe_master) {
     htsmsg_t *s = htsmsg_create_map();
     linuxdvb_satconf_save(lfe->lfe_satconf, s);
-    htsmsg_add_str(s, "uuid", idnode_uuid_as_sstr(&lfe->lfe_satconf->ls_id));
+    htsmsg_add_str(s, "uuid", idnode_uuid_as_str(&lfe->lfe_satconf->ls_id, ubuf));
     htsmsg_add_msg(m, "satconf", s);
   }
   htsmsg_delete_field(m, "fe_master");

@@ -95,6 +95,7 @@ satip_satconf_class_network_set( void *o, const void *p )
   htsmsg_field_t *f;
   const char *str;
   int i, save;
+  char ubuf[UUID_HEX_SIZE];
 
   HTSMSG_FOREACH(f, msg) {
     if (!(str = htsmsg_field_get_str(f))) continue;
@@ -121,7 +122,7 @@ satip_satconf_class_network_set( void *o, const void *p )
     TAILQ_FOREACH(sfc2, &lfe->sf_satconf, sfc_link) {
       for (i = 0; i < sfc2->sfc_networks->is_count; i++)
         htsmsg_add_str(l, NULL,
-                       idnode_uuid_as_sstr(sfc2->sfc_networks->is_array[i]));
+                       idnode_uuid_as_str(sfc2->sfc_networks->is_array[i], ubuf));
     }
     mpegts_input_class_network_set(lfe, l);
     /* update the slave tuners, too */
@@ -186,12 +187,14 @@ const idclass_t satip_satconf_class =
       .type     = PT_BOOL,
       .id       = "enabled",
       .name     = N_("Enabled"),
+      .desc     = N_("Enable or disable this configuration."),
       .off      = offsetof(satip_satconf_t, sfc_enabled),
     },
     {
       .type     = PT_STR,
       .id       = "displayname",
       .name     = N_("Name"),
+      .desc     = N_("Set the display name."),
       .off      = offsetof(satip_satconf_t, sfc_name),
       .notify   = idnode_notify_title_changed,
     },
@@ -199,6 +202,7 @@ const idclass_t satip_satconf_class =
       .type     = PT_INT,
       .id       = "priority",
       .name     = N_("Priority"),
+      .desc     = N_("Set the priority of this configuration."),
       .off      = offsetof(satip_satconf_t, sfc_priority),
       .opts     = PO_ADVANCED,
     },
@@ -206,6 +210,7 @@ const idclass_t satip_satconf_class =
       .type     = PT_INT,
       .id       = "timeout",
       .name     = N_("Timeout (seconds)"),
+      .desc     = N_("Number of seconds to wait before timing out."),
       .off      = offsetof(satip_satconf_t, sfc_grace),
       .opts     = PO_ADVANCED,
       .def.i    = 10
@@ -214,6 +219,7 @@ const idclass_t satip_satconf_class =
       .type     = PT_INT,
       .id       = "position",
       .name     = N_("Position"),
+      .desc     = N_("Position of the input."),
       .off      = offsetof(satip_satconf_t, sfc_position),
       .def.i    = 1,
       .opts     = PO_RDONLY | PO_ADVANCED,
@@ -222,6 +228,7 @@ const idclass_t satip_satconf_class =
       .type     = PT_STR,
       .id       = "networks",
       .name     = N_("Networks"),
+      .desc     = N_("The networks using this configuration."),
       .islist   = 1,
       .set      = satip_satconf_class_network_set,
       .get      = satip_satconf_class_network_get,

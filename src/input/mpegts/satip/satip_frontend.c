@@ -144,6 +144,7 @@ const idclass_t satip_frontend_class =
       .type     = PT_INT,
       .id       = "fe_number",
       .name     = N_("Frontend number"),
+      .desc     = N_("SAT->IP frontend number."),
       .opts     = PO_RDONLY | PO_NOSAVE,
       .off      = offsetof(satip_frontend_t, sf_number),
     },
@@ -151,12 +152,20 @@ const idclass_t satip_frontend_class =
       .type     = PT_INT,
       .id       = "udp_rtp_port",
       .name     = N_("UDP RTP port number (2 ports)"),
+      .desc     = N_("Force the local UDP Port number here. The number "
+                     "should be even (RTP port). The next odd number "
+                     "(+1) will be used as the RTCP port."),
       .off      = offsetof(satip_frontend_t, sf_udp_rtp_port),
+      .opts     = PO_ADVANCED,
     },
     {
       .type     = PT_INT,
       .id       = "tdelay",
       .name     = N_("Next tune delay in ms (0-2000)"),
+      .desc     = N_("The minimum delay before tuning in milliseconds "
+                     "after tuner stop. If the time between the "
+                     "previous and next start is greater than this "
+                     "value then the delay is not applied."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_frontend_t, sf_tdelay),
     },
@@ -164,6 +173,9 @@ const idclass_t satip_frontend_class =
       .type     = PT_BOOL,
       .id       = "play2",
       .name     = N_("Send full PLAY cmd"),
+      .desc     = N_("Send the full RTSP PLAY command after full RTSP "
+                     "SETUP command. Some devices firmware require this "
+                     "to get an MPEG-TS stream."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_frontend_t, sf_play2),
     },
@@ -171,13 +183,31 @@ const idclass_t satip_frontend_class =
       .type     = PT_BOOL,
       .id       = "teardown_delay",
       .name     = N_("Force teardown delay"),
+      .desc     = N_("Force the delay between RTSP TEARDOWN and RTSP "
+                     "SETUP command (value from 'Next tune delay in ms' "
+                     "is used). Some devices are not able to handle "
+                     "quick continuous tuning."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_frontend_t, sf_teardown_delay),
+    },
+    {
+      .type     = PT_BOOL,
+      .id       = "pass_weight",
+      .name     = N_("Pass subscription weight"),
+      .desc     = N_("Pass subscription weight to the SAT>IP server "
+                     "(Tvheadend specific extension)."),
+      .opts     = PO_ADVANCED,
+      .off      = offsetof(satip_frontend_t, sf_pass_weight),
     },
     {
       .type     = PT_STR,
       .id       = "tunerbindaddr",
       .name     = N_("Tuner bind IP address"),
+      .desc     = N_("Force all network connections to this tuner to be "
+                     "made over the specified IP address, similar to "
+                     "the setting for the SAT>IP device itself. "
+                     "Setting this overrides the device-specific "
+                     "setting."),
       .opts     = PO_ADVANCED,
       .off      = offsetof(satip_frontend_t, sf_tuner_bindaddr),
     },
@@ -195,6 +225,7 @@ const idclass_t satip_frontend_dvbt_class =
       .type     = PT_STR,
       .id       = "fe_override",
       .name     = N_("Network type"),
+      .desc     = N_("Override the frontend type."),
       .set      = satip_frontend_class_override_set,
       .list     = satip_frontend_class_override_enum,
       .off      = offsetof(satip_frontend_t, sf_type_override),
@@ -281,6 +312,9 @@ const idclass_t satip_frontend_dvbs_class =
       .type     = PT_INT,
       .id       = "positions",
       .name     = N_("Satellite positions"),
+      .desc     = N_("Select the number of satellite positions "
+                     "supported by the SAT>IP hardware and your "
+                     "coaxial cable wiring."),
       .set      = satip_frontend_dvbs_class_positions_set,
       .opts     = PO_NOSAVE,
       .off      = offsetof(satip_frontend_t, sf_positions),
@@ -290,6 +324,16 @@ const idclass_t satip_frontend_dvbs_class =
       .type     = PT_INT,
       .id       = "fe_master",
       .name     = N_("Master tuner"),
+      .desc     = N_("Select the master tuner."
+                     "The signal from the standard universal LNB can be "
+                     "split using a simple coaxial splitter "
+                     "(no multiswitch) to several outputs. In this "
+                     "case, the position, the polarization and low-high "
+                     "band settings must be equal."
+                     "if you set other tuner as master, then this tuner "
+                     "will act like a slave one and tvheadend will "
+                     "assure that this tuner will not use incompatible "
+                     "parameters (position, polarization, lo-hi)."),
       .set      = satip_frontend_dvbs_class_master_set,
       .list     = satip_frontend_dvbs_class_master_enum,
       .off      = offsetof(satip_frontend_t, sf_master),
@@ -312,6 +356,16 @@ const idclass_t satip_frontend_dvbs_slave_class =
       .type     = PT_INT,
       .id       = "fe_master",
       .name     = N_("Master tuner"),
+      .desc     = N_("Select the master tuner."
+                     "The signal from the standard universal LNB can be "
+                     "split using a simple coaxial splitter "
+                     "(no multiswitch) to several outputs. In this "
+                     "case, the position, the polarization and low-high "
+                     "band settings must be equal."
+                     "if you set other tuner as master, then this tuner "
+                     "will act like a slave one and tvheadend will "
+                     "assure that this tuner will not use incompatible "
+                     "parameters (position, polarization, lo-hi)."),
       .set      = satip_frontend_dvbs_class_master_set,
       .list     = satip_frontend_dvbs_class_master_enum,
       .off      = offsetof(satip_frontend_t, sf_master),
@@ -334,6 +388,7 @@ const idclass_t satip_frontend_dvbc_class =
       .type     = PT_STR,
       .id       = "fe_override",
       .name     = N_("Network type"),
+      .desc     = N_("Override the frontend type."),
       .set      = satip_frontend_class_override_set,
       .list     = satip_frontend_class_override_enum,
       .off      = offsetof(satip_frontend_t, sf_type_override),
@@ -342,11 +397,21 @@ const idclass_t satip_frontend_dvbc_class =
   }
 };
 
-const idclass_t satip_frontend_atsc_class =
+const idclass_t satip_frontend_atsc_t_class =
 {
   .ic_super      = &satip_frontend_class,
-  .ic_class      = "satip_frontend_atsc",
-  .ic_caption    = N_("SAT>IP ATSC frontend"),
+  .ic_class      = "satip_frontend_atsc_t",
+  .ic_caption    = N_("SAT>IP ATSC-T frontend"),
+  .ic_properties = (const property_t[]){
+    {}
+  }
+};
+
+const idclass_t satip_frontend_atsc_c_class =
+{
+  .ic_super      = &satip_frontend_class,
+  .ic_class      = "satip_frontend_atsc_c",
+  .ic_caption    = N_("SAT>IP ATSC-C frontend"),
   .ic_properties = (const property_t[]){
     {}
   }
@@ -479,7 +544,7 @@ satip_frontend_stop_mux
 
 static int
 satip_frontend_start_mux
-  ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi )
+  ( mpegts_input_t *mi, mpegts_mux_instance_t *mmi, int weight )
 {
   satip_frontend_t *lfe = (satip_frontend_t*)mi;
   dvb_mux_t *lm = (dvb_mux_t *)mmi->mmi_mux;
@@ -512,6 +577,8 @@ satip_frontend_start_mux
 
   mpegts_pid_init(&tr->sf_pids);
   mpegts_pid_init(&tr->sf_pids_tuned);
+  if (lfe->sf_device->sd_can_weight)
+    tr->sf_weight = weight;
 
   pthread_mutex_lock(&lfe->sf_dvr_lock);
   lfe->sf_req       = tr;
@@ -564,6 +631,31 @@ satip_frontend_update_pids
           mpegts_pid_add(&tr->sf_pids, mp->mp_pid, mps->mps_weight);
       }
     }
+  }
+  pthread_mutex_unlock(&lfe->sf_dvr_lock);
+
+  tvh_write(lfe->sf_dvr_pipe.wr, "c", 1);
+}
+
+static void
+satip_frontend_open_service
+  ( mpegts_input_t *mi, mpegts_service_t *s, int flags, int init, int weight )
+{
+  satip_frontend_t *lfe = (satip_frontend_t*)mi;
+  satip_tune_req_t *tr;
+  int w;
+
+  mpegts_input_open_service(mi, s, flags, init, weight);
+
+  if (!lfe->sf_device->sd_can_weight)
+    return;
+
+  pthread_mutex_lock(&lfe->sf_dvr_lock);
+  if ((tr = lfe->sf_req) != NULL && tr->sf_mmi != NULL) {
+    pthread_mutex_lock(&mi->mi_output_lock);
+    w = mpegts_mux_instance_weight(tr->sf_mmi);
+    tr->sf_weight = MAX(w, weight);
+    pthread_mutex_unlock(&mi->mi_output_lock);
   }
   pthread_mutex_unlock(&lfe->sf_dvr_lock);
 
@@ -750,9 +842,10 @@ all:
     tr->sf_pids_tuned.all = 1;
     pthread_mutex_unlock(&lfe->sf_dvr_lock);
     if (i)
-      return 0;
+      goto skip;
 
-    r = satip_rtsp_play(rtsp, "all", NULL, NULL, max_pids_len);
+    tr->sf_weight_tuned = tr->sf_weight;
+    r = satip_rtsp_play(rtsp, "all", NULL, NULL, max_pids_len, tr->sf_weight);
     r = r == 0 ? 1 : r;
 
   } else if (!lfe->sf_device->sd_pids_deladd ||
@@ -771,9 +864,10 @@ all:
     mpegts_pid_done(&wpid);
 
     if (!j || add[0] == '\0')
-      return 0;
+      goto skip;
 
-    r = satip_rtsp_play(rtsp, add, NULL, NULL, max_pids_len);
+    tr->sf_weight_tuned = tr->sf_weight;
+    r = satip_rtsp_play(rtsp, add, NULL, NULL, max_pids_len, tr->sf_weight);
     r = r == 0 ? 1 : r;
 
   } else {
@@ -811,15 +905,23 @@ all:
     mpegts_pid_done(&pdel);
 
     if (add[0] == '\0' && del[0] == '\0')
-      return 0;
+      goto skip;
 
-    r = satip_rtsp_play(rtsp, NULL, add, del, max_pids_len);
+    tr->sf_weight_tuned = tr->sf_weight;
+    r = satip_rtsp_play(rtsp, NULL, add, del, max_pids_len, tr->sf_weight);
     r = r == 0 ? 1 : r;
   }
 
   if (r < 0)
     tvherror("satip", "%s - failed to modify pids: %s", name, strerror(-r));
   return r;
+
+skip:
+  if (tr->sf_weight_tuned != tr->sf_weight) {
+    tr->sf_weight_tuned = tr->sf_weight;
+    r = satip_rtsp_play(rtsp, NULL, NULL, NULL, 0, tr->sf_weight);
+  }
+  return 0;
 }
 
 static void
@@ -1328,11 +1430,14 @@ new_tune:
     rtsp_flags |= SATIP_SETUP_PIDS21;
   r = -12345678;
   pthread_mutex_lock(&lfe->sf_dvr_lock);
-  if (lfe->sf_req == lfe->sf_req_thread)
+  if (lfe->sf_req == lfe->sf_req_thread) {
+    lfe->sf_req->sf_weight_tuned = lfe->sf_req->sf_weight;
     r = satip_rtsp_setup(rtsp,
                          position, lfe->sf_number,
                          rtp_port, &lm->lm_tuning,
-                         rtsp_flags);
+                         rtsp_flags,
+                         lfe->sf_req->sf_weight);
+  }
   pthread_mutex_unlock(&lfe->sf_dvr_lock);
   if (r < 0) {
     if (r != -12345678)
@@ -1352,9 +1457,11 @@ new_tune:
 
     nfds = tvhpoll_wait(efd, ev, 1, ms);
 
-    if (!tvheadend_running) {
+    if (!tvheadend_running || exit_flag) {
       exit_flag = 1;
       running = 0;
+      if (reply++ > 5)
+        break;
     }
 
     if (nfds > 0 && ev[0].data.ptr == NULL) {
@@ -1443,10 +1550,13 @@ new_tune:
             if (lfe->sf_play2) {
               r = -12345678;
               pthread_mutex_lock(&lfe->sf_dvr_lock);
-              if (lfe->sf_req == lfe->sf_req_thread)
+              if (lfe->sf_req == lfe->sf_req_thread) {
+                lfe->sf_req->sf_weight_tuned = lfe->sf_req->sf_weight;
                 r = satip_rtsp_setup(rtsp, position, lfe->sf_number,
                                      rtp_port, &lm->lm_tuning,
-                                     rtsp_flags | SATIP_SETUP_PLAY);
+                                     rtsp_flags | SATIP_SETUP_PLAY,
+                                     lfe->sf_req->sf_weight);
+              }
               pthread_mutex_unlock(&lfe->sf_dvr_lock);
               if (r < 0) {
                 tvherror("satip", "%s - failed to tune2 (%i)", buf, r);
@@ -1578,9 +1688,6 @@ wrdata:
     pthread_mutex_unlock(&lfe->sf_dvr_lock);
   }
 
-  /* Do not send the SMT_SIGNAL_STATUS packets - we are out of service */
-  gtimer_disarm(&lfe->sf_monitor_timer);
-
   sbuf_free(sb);
   udp_multirecv_free(&um);
   lfe->sf_curmux = NULL;
@@ -1651,6 +1758,7 @@ satip_frontend_hacks( satip_frontend_t *lfe, int *def_positions )
   satip_device_t *sd = lfe->sf_device;
 
   lfe->sf_tdelay = 50; /* should not hurt anything */
+  lfe->sf_pass_weight = 1;
   if (strstr(sd->sd_info.location, ":8888/octonet.xml")) {
     if (lfe->sf_type == DVB_TYPE_S)
       lfe->sf_play2 = 1;
@@ -1710,8 +1818,10 @@ satip_frontend_create
     idc = &satip_frontend_dvbt_class;
   else if (type == DVB_TYPE_C)
     idc = &satip_frontend_dvbc_class;
-  else if (type == DVB_TYPE_ATSC)
-    idc = &satip_frontend_atsc_class;
+  else if (type == DVB_TYPE_ATSC_T)
+    idc = &satip_frontend_atsc_t_class;
+  else if (type == DVB_TYPE_ATSC_C)
+    idc = &satip_frontend_atsc_c_class;
   else {
     tvherror("satip", "unknown FE type %d", type);
     return NULL;
@@ -1727,6 +1837,7 @@ satip_frontend_create
   lfe->sf_type_v2  = v2;
   lfe->sf_master   = master;
   lfe->sf_type_override = override ? strdup(override) : NULL;
+  lfe->sf_pass_weight = 1;
   satip_frontend_hacks(lfe, &def_positions);
   TAILQ_INIT(&lfe->sf_satconf);
   pthread_mutex_init(&lfe->sf_dvr_lock, NULL);
@@ -1759,6 +1870,7 @@ satip_frontend_create
   lfe->mi_stop_mux       = satip_frontend_stop_mux;
   lfe->mi_network_list   = satip_frontend_network_list;
   lfe->mi_update_pids    = satip_frontend_update_pids;
+  lfe->mi_open_service   = satip_frontend_open_service;
   lfe->mi_empty_status   = mpegts_input_empty_status;
 
   /* Adapter link */
@@ -1791,13 +1903,13 @@ satip_frontend_create
 void
 satip_frontend_save ( satip_frontend_t *lfe, htsmsg_t *fe )
 {
-  char id[16];
+  char id[16], ubuf[UUID_HEX_SIZE];
   htsmsg_t *m = htsmsg_create_map();
 
   /* Save frontend */
   mpegts_input_save((mpegts_input_t*)lfe, m);
   htsmsg_add_str(m, "type", dvb_type2str(lfe->sf_type));
-  htsmsg_add_str(m, "uuid", idnode_uuid_as_sstr(&lfe->ti_id));
+  htsmsg_add_str(m, "uuid", idnode_uuid_as_str(&lfe->ti_id, ubuf));
   if (lfe->ti_id.in_class == &satip_frontend_dvbs_class) {
     satip_satconf_save(lfe, m);
     htsmsg_delete_field(m, "networks");

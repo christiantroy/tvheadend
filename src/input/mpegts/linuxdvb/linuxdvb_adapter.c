@@ -108,6 +108,7 @@ linuxdvb_adapter_save ( linuxdvb_adapter_t *la )
 #if ENABLE_LINUXDVB_CA
   linuxdvb_ca_t *lca;
 #endif
+  char ubuf[UUID_HEX_SIZE];
 
   m = htsmsg_create_map();
   idnode_save(&la->th_id, m);
@@ -128,7 +129,7 @@ linuxdvb_adapter_save ( linuxdvb_adapter_t *la )
 
   /* Save */
   hts_settings_save(m, "input/linuxdvb/adapters/%s",
-                    idnode_uuid_as_sstr(&la->th_id));
+                    idnode_uuid_as_str(&la->th_id, ubuf));
   htsmsg_destroy(m);
 }
 
@@ -233,7 +234,7 @@ linuxdvb_get_type(int linux_type)
   case FE_OFDM:
     return DVB_TYPE_T;
   case FE_ATSC:
-    return DVB_TYPE_ATSC;
+    return DVB_TYPE_ATSC_T;
   default:
     return DVB_TYPE_NONE;
   }
@@ -296,7 +297,7 @@ linuxdvb_adapter_add ( const char *path )
   int save = 0;
   dvb_fe_type_t type;
 #if DVB_VER_ATLEAST(5,5)
-  int delsys;
+  int delsys, fenum, type5;
   dvb_fe_type_t fetypes[DVB_TYPE_LAST+1];
   struct dtv_property cmd;
   linuxdvb_frontend_t *lfe;
@@ -377,29 +378,33 @@ linuxdvb_adapter_add ( const char *path )
     }
 
     /* Create frontend */
-    linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path, type, dfi.name);
 #if DVB_VER_ATLEAST(5,5)
     memset(fetypes, 0, sizeof(fetypes));
-    fetypes[type] = 1;
-    for (j = 0; j < cmd.u.buffer.len; j++) {
+    for (j = fenum = 0; j < cmd.u.buffer.len; j++) {
       delsys = cmd.u.buffer.data[j];
 
       if ((delsys = linuxdvb2tvh_delsys(delsys)) == DVB_SYS_NONE)
         continue;
 
       /* Invalid */
-      if ((type = dvb_delsys2type(delsys)) == DVB_TYPE_NONE)
+      if ((type5 = dvb_delsys2type(delsys)) == DVB_TYPE_NONE)
         continue;
 
       /* Couldn't find */
-      if (fetypes[type])
+      if (fetypes[type5])
         continue;
 
       /* Create */
       linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path,
-                               type, dfi.name);
-      fetypes[type] = 1;
+                               type5, dfi.name);
+      fetypes[type5] = 1;
+      fenum++;
     }
+    if (fenum == 0)
+      linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path,
+                               type, dfi.name);
+#else
+    linuxdvb_frontend_create(feconf, la, i, fe_path, dmx_path, dvr_path, type, dfi.name);
 #endif
     pthread_mutex_unlock(&global_lock);
   }

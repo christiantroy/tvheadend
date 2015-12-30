@@ -68,7 +68,7 @@ satip_server_http_xml(http_connection_t *hc)
 <manufacturerURL>http://tvheadend.org</manufacturerURL>\n\
 <modelDescription>TVHeadend %s</modelDescription>\n\
 <modelName>TVHeadend SAT>IP</modelName>\n\
-<modelNumber>1.0</modelNumber>\n\
+<modelNumber>1.1</modelNumber>\n\
 <modelURL></modelURL>\n\
 <serialNumber>123456</serialNumber>\n\
 <UDN>uuid:%s</UDN>\n\
@@ -119,14 +119,14 @@ satip_server_http_xml(http_connection_t *hc)
   http_arg_list_t args;
 
   struct xml_type_xtab xtab[] =  {
-    { "DVBS",  &satip_server_conf.satip_dvbs,  &dvbs },
-    { "DVBS2", &satip_server_conf.satip_dvbs2, &dvbs },
-    { "DVBT",  &satip_server_conf.satip_dvbt,  &dvbt },
-    { "DVBT2", &satip_server_conf.satip_dvbt2, &dvbt },
-    { "DVBC",  &satip_server_conf.satip_dvbc,  &dvbc },
-    { "DVBC2", &satip_server_conf.satip_dvbc2, &dvbc },
-    { "ATSC",  &satip_server_conf.satip_atsc,  &atsc },
-    { "DVBCB", &satip_server_conf.satip_dvbcb, &dvbc },
+    { "DVBS",  &satip_server_conf.satip_dvbs,   &dvbs },
+    { "DVBS2", &satip_server_conf.satip_dvbs2,  &dvbs },
+    { "DVBT",  &satip_server_conf.satip_dvbt,   &dvbt },
+    { "DVBT2", &satip_server_conf.satip_dvbt2,  &dvbt },
+    { "DVBC",  &satip_server_conf.satip_dvbc,   &dvbc },
+    { "DVBC2", &satip_server_conf.satip_dvbc2,  &dvbc },
+    { "ATSCT", &satip_server_conf.satip_atsc_t, &atsc },
+    { "ATSCC", &satip_server_conf.satip_atsc_c, &atsc },
     {}
   };
 
@@ -145,7 +145,7 @@ satip_server_http_xml(http_connection_t *hc)
         srcs = mn->mn_satip_source;
     } else if (idnode_is_instance(&mn->mn_id, &dvb_network_dvbc_class))
       dvbc++;
-    else if (idnode_is_instance(&mn->mn_id, &dvb_network_atsc_class))
+    else if (idnode_is_instance(&mn->mn_id, &dvb_network_atsc_t_class))
       atsc++;
     else if (idnode_is_instance(&mn->mn_id, &iptv_network_class)) {
       LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link)
@@ -204,10 +204,11 @@ satip_server_http_xml(http_connection_t *hc)
     snprintf(buf2, sizeof(buf2), "%d", srcs);
     http_arg_set(&args, "X-SATIP-Sources", buf2);
   }
+  pthread_mutex_lock(&hc->hc_fd_lock);
   http_send_header(hc, 200, "text/xml", strlen(buf), 0, NULL, 10, 0, NULL, &args);
-  http_arg_flush(&args);
-
   tvh_write(hc->hc_fd, buf, strlen(buf));
+  pthread_mutex_unlock(&hc->hc_fd_lock);
+  http_arg_flush(&args);
 
   return 0;
 #undef MSG
@@ -526,15 +527,15 @@ static void satip_server_info(const char *prefix, int descramble, int muxcnf)
               http_server_ip, http_server_port,
               http_server_ip, satip_server_rtsp_port,
               descramble, muxcnf);
-  tvhinfo("satips", "SAT>IP Server tuners: DVB-T/T2 %d/%d, DVB-S/S2 %d/%d, DVB-C/C2 %d/%d, ATSC %d, DVB-Cable/AnnexB %d",
+  tvhinfo("satips", "SAT>IP Server tuners: DVB-T/T2 %d/%d, DVB-S/S2 %d/%d, DVB-C/C2 %d/%d, ATSC-T/C %d/%d",
               satip_server_conf.satip_dvbt,
               satip_server_conf.satip_dvbt2,
               satip_server_conf.satip_dvbs,
               satip_server_conf.satip_dvbs2,
               satip_server_conf.satip_dvbc,
               satip_server_conf.satip_dvbc2,
-              satip_server_conf.satip_atsc,
-              satip_server_conf.satip_dvbcb);
+              satip_server_conf.satip_atsc_t,
+              satip_server_conf.satip_atsc_c);
 }
 
 /*
@@ -543,7 +544,8 @@ static void satip_server_info(const char *prefix, int descramble, int muxcnf)
 struct satip_server_conf satip_server_conf = {
   .idnode.in_class = &satip_server_class,
   .satip_descramble = 1,
-  .satip_weight = 100
+  .satip_weight = 100,
+  .satip_allow_remote_weight = 1
 };
 
 static void satip_server_class_save(idnode_t *self)
@@ -585,14 +587,18 @@ const idclass_t satip_server_class = {
       .type   = PT_STR,
       .id     = "satip_uuid",
       .name   = N_("Server UUID"),
+      .desc   = N_("Universally unique identifier. Read only."),
       .off    = offsetof(struct satip_server_conf, satip_uuid),
-      .opts   = PO_RDONLY,
+      .opts   = PO_RDONLY | PO_EXPERT,
       .group  = 1,
     },
     {
       .type   = PT_INT,
       .id     = "satip_rtsp",
-      .name   = N_("RTSP Port (554 or 9983), 0 = disable"),
+      .name   = N_("RTSP port (554 or 9983, 0 = disable)"),
+      .desc   = N_("Real Time Streaming Protocol (RTSP) port the "
+                   "server should listen on (554 or 9983, 0 = "
+                   "disable)."),
       .off    = offsetof(struct satip_server_conf, satip_rtsp),
       .group  = 1,
     },
@@ -600,35 +606,72 @@ const idclass_t satip_server_class = {
       .type   = PT_INT,
       .id     = "satip_weight",
       .name   = N_("Subscription weight"),
+      .desc   = N_("The default subscription weight for each "
+                   "subscription."),
       .off    = offsetof(struct satip_server_conf, satip_weight),
+      .opts   = PO_ADVANCED,
+      .group  = 1,
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "satip_remote_weight",
+      .name   = N_("Accept remote subscription weight"),
+      .desc   = N_("Accept the remote subscription weight "
+                   "(from the SAT>IP client)."),
+      .off    = offsetof(struct satip_server_conf, satip_allow_remote_weight),
+      .opts   = PO_EXPERT,
       .group  = 1,
     },
     {
       .type   = PT_INT,
       .id     = "satip_descramble",
       .name   = N_("Descramble services (limit per mux)"),
+      .desc   = N_("The maximum number of services to decrypt per "
+                   "mux."),
       .off    = offsetof(struct satip_server_conf, satip_descramble),
+      .opts   = PO_ADVANCED,
       .group  = 1,
     },
     {
       .type   = PT_BOOL,
       .id     = "satip_rewrite_pmt",
       .name   = N_("Rewrite PMT"),
+      .desc   = N_("Rewrite Program Association Table (PMT) packets "
+                   "to only include information about the currently "
+                   "streamed service."),
       .off    = offsetof(struct satip_server_conf, satip_rewrite_pmt),
+      .opts   = PO_EXPERT,
       .group  = 1,
     },
     {
       .type   = PT_INT,
       .id     = "satip_muxcnf",
       .name   = N_("Mux handling"),
+      .desc   = N_("Select how Tvheadend should handle muxes. "
+                   "Auto = accept the mux if it "
+                   "doesn't already exist. Keep = Always keep the mux"
+                   "regardless of whether it exists or not. Reject = "
+                   "Always reject."),
       .off    = offsetof(struct satip_server_conf, satip_muxcnf),
       .list   = satip_server_class_muxcfg_list,
+      .opts   = PO_EXPERT,
+      .group  = 1,
+    },
+    {
+      .type   = PT_STR,
+      .id     = "satip_nat_ip",
+      .name   = N_("External IP (NAT)"),
+      .desc   = N_("Enter external IP if behind Network address "
+                   "translation (NAT)."),
+      .off    = offsetof(struct satip_server_conf, satip_nat_ip),
+      .opts   = PO_EXPERT,
       .group  = 1,
     },
     {
       .type   = PT_INT,
       .id     = "satip_dvbs",
       .name   = N_("DVB-S"),
+      .desc   = N_("The number of DVB-S (Satellite) tuners to export."),
       .off    = offsetof(struct satip_server_conf, satip_dvbs),
       .group  = 2,
     },
@@ -636,6 +679,7 @@ const idclass_t satip_server_class = {
       .type   = PT_INT,
       .id     = "satip_dvbs2",
       .name   = N_("DVB-S2"),
+      .desc   = N_("The number of DVB-S2 (Satellite) tuners to export."),
       .off    = offsetof(struct satip_server_conf, satip_dvbs2),
       .group  = 2,
     },
@@ -643,6 +687,7 @@ const idclass_t satip_server_class = {
       .type   = PT_INT,
       .id     = "satip_dvbt",
       .name   = N_("DVB-T"),
+      .desc   = N_("The number of DVB-T (Terresterial) tuners to export."),
       .off    = offsetof(struct satip_server_conf, satip_dvbt),
       .group  = 2,
     },
@@ -650,6 +695,7 @@ const idclass_t satip_server_class = {
       .type   = PT_INT,
       .id     = "satip_dvbt2",
       .name   = N_("DVB-T2"),
+      .desc   = N_("The number of DVB-T2 (Terresterial) tuners to export."),
       .off    = offsetof(struct satip_server_conf, satip_dvbt2),
       .group  = 2,
     },
@@ -657,6 +703,7 @@ const idclass_t satip_server_class = {
       .type   = PT_INT,
       .id     = "satip_dvbc",
       .name   = N_("DVB-C"),
+      .desc   = N_("The number of DVB-C (Cable) tuners to export."),
       .off    = offsetof(struct satip_server_conf, satip_dvbc),
       .group  = 2,
     },
@@ -664,21 +711,24 @@ const idclass_t satip_server_class = {
       .type   = PT_INT,
       .id     = "satip_dvbc2",
       .name   = N_("DVB-C2"),
+      .desc   = N_("The number of DVB-C2 (Cable) tuners to export."),
       .off    = offsetof(struct satip_server_conf, satip_dvbc2),
       .group  = 2,
     },
     {
       .type   = PT_INT,
-      .id     = "satip_atsc",
-      .name   = N_("ATSC"),
-      .off    = offsetof(struct satip_server_conf, satip_atsc),
+      .id     = "satip_atsct",
+      .name   = N_("ATSC-T"),
+      .desc   = N_("The number of ATSC-T (Terresterial) tuners to export."),
+      .off    = offsetof(struct satip_server_conf, satip_atsc_t),
       .group  = 2,
     },
     {
       .type   = PT_INT,
-      .id     = "satip_dvbc2",
-      .name   = N_("DVB-Cable/AnnexB"),
-      .off    = offsetof(struct satip_server_conf, satip_dvbcb),
+      .id     = "satip_atscc",
+      .name   = N_("ATSC-C"),
+      .desc   = N_("The number of ATSC-C (Cable/AnnexB) tuners to export."),
+      .off    = offsetof(struct satip_server_conf, satip_atsc_c),
       .group  = 2,
     },
     {}
@@ -691,6 +741,7 @@ const idclass_t satip_server_class = {
 static void satip_server_save(void)
 {
   int descramble, rewrite_pmt, muxcnf;
+  char *nat_ip;
 
   config_save();
   if (!satip_server_rtsp_port_locked) {
@@ -699,11 +750,13 @@ static void satip_server_save(void)
       descramble = satip_server_conf.satip_descramble;
       rewrite_pmt = satip_server_conf.satip_rewrite_pmt;
       muxcnf = satip_server_conf.satip_muxcnf;
+      nat_ip = satip_server_conf.satip_nat_ip ? strdup(satip_server_conf.satip_nat_ip) : NULL;
       pthread_mutex_unlock(&global_lock);
-      satip_server_rtsp_init(http_server_ip, satip_server_rtsp_port, descramble, rewrite_pmt, muxcnf);
+      satip_server_rtsp_init(http_server_ip, satip_server_rtsp_port, descramble, rewrite_pmt, muxcnf, nat_ip);
       satip_server_info("re", descramble, muxcnf);
       satips_upnp_send_announce();
       pthread_mutex_lock(&global_lock);
+      free(nat_ip);
     } else {
       pthread_mutex_unlock(&global_lock);
       tvhinfo("satips", "SAT>IP Server shutdown");
@@ -723,6 +776,7 @@ void satip_server_init(int rtsp_port)
   struct sockaddr_storage http;
   char http_ip[128];
   int descramble, rewrite_pmt, muxcnf;
+  char *nat_ip;
 
   http_server_ip = NULL;
   satip_server_bootid = time(NULL);
@@ -746,8 +800,9 @@ void satip_server_init(int rtsp_port)
   descramble = satip_server_conf.satip_descramble;
   rewrite_pmt = satip_server_conf.satip_rewrite_pmt;
   muxcnf = satip_server_conf.satip_muxcnf;
+  nat_ip = satip_server_conf.satip_nat_ip;
 
-  satip_server_rtsp_init(http_server_ip, satip_server_rtsp_port, descramble, rewrite_pmt, muxcnf);
+  satip_server_rtsp_init(http_server_ip, satip_server_rtsp_port, descramble, rewrite_pmt, muxcnf, nat_ip);
 
   satip_server_info("", descramble, muxcnf);
 }

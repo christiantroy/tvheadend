@@ -37,9 +37,11 @@
       ((struct sockaddr_in6 *)&(storage))->sin6_port : \
       ((struct sockaddr_in  *)&(storage))->sin_port)
 #define IP_PORT_SET(storage, port) \
-  if ((storage).ss_family == AF_INET6) \
+  do { \
+    if ((storage).ss_family == AF_INET6) \
       ((struct sockaddr_in6 *)&(storage))->sin6_port = (port); else \
-      ((struct sockaddr_in  *)&(storage))->sin_port  = (port);
+      ((struct sockaddr_in  *)&(storage))->sin_port  = (port); \
+  } while (0)
 
 typedef struct tcp_server_ops
 {
@@ -65,8 +67,9 @@ typedef void (tcp_server_callback_t)(int fd, void *opaque,
 				     struct sockaddr_storage *peer,
 				     struct sockaddr_storage *self);
 
-void *tcp_server_create(const char *bindaddr, int port, 
-  tcp_server_ops_t *ops, void *opaque);
+void *tcp_server_create(const char *subsystem, const char *name,
+                        const char *bindaddr, int port,
+                        tcp_server_ops_t *ops, void *opaque);
 
 void tcp_server_register(void *server);
 

@@ -212,7 +212,8 @@ SRCS-1 = \
 	src/intlconv.c \
 	src/profile.c \
 	src/bouquet.c \
-	src/lock.c
+	src/lock.c \
+	src/wizard.c
 SRCS = $(SRCS-1)
 I18N-C = $(SRCS-1)
 
@@ -254,7 +255,8 @@ SRCS-2 = \
 	src/api/api_bouquet.c \
 	src/api/api_language.c \
 	src/api/api_satip.c \
-	src/api/api_timeshift.c
+	src/api/api_timeshift.c \
+	src/api/api_wizard.c
 
 SRCS-2 += \
 	src/parsers/parsers.c \
@@ -280,8 +282,9 @@ SRCS-2 += \
 	src/dvr/dvr_rec.c \
 	src/dvr/dvr_autorec.c \
 	src/dvr/dvr_timerec.c \
+	src/dvr/dvr_vfsmgr.c \
 	src/dvr/dvr_config.c \
-	src/dvr/dvr_cutpoints.c \
+	src/dvr/dvr_cutpoints.c
 
 SRCS-2 += \
 	src/webui/webui.c \

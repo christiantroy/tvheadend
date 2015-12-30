@@ -242,9 +242,8 @@ subscription_show_info(th_subscription_t *s)
     tvh_strlcatf(buf, sizeof(buf), l, ", service: \"%s\"", si.si_service);
 
   if (s->ths_prch && s->ths_prch->prch_pro)
-    tvh_strlcatf(buf, sizeof(buf), l,
-                       ", profile=\"%s\"",
-                       s->ths_prch->prch_pro->pro_name ?: "");
+    tvh_strlcatf(buf, sizeof(buf), l, ", profile=\"%s\"",
+                                      profile_get_name(s->ths_prch->prch_pro));
 
   if (s->ths_hostname)
     tvh_strlcatf(buf, sizeof(buf), l, ", hostname=\"%s\"", s->ths_hostname);
@@ -393,6 +392,16 @@ subscription_reschedule(void)
 	           subscription_reschedule_cb, NULL, postpone);
 
   reenter = 0;
+}
+
+/**
+ *
+ */
+void
+subscription_set_weight(th_subscription_t *s, unsigned int weight)
+{
+  lock_assert(&global_lock);
+  s->ths_weight = weight;
 }
 
 /**
@@ -755,7 +764,7 @@ subscription_create_from_channel_or_service(profile_chain_t *prch,
   s = subscription_create(prch, weight, name, flags, subscription_input,
                           hostname, username, client);
   if (tvhtrace_enabled()) {
-    const char *pro_name = prch->prch_pro ? (prch->prch_pro->pro_name ?: "") : "<none>";
+    const char *pro_name = prch->prch_pro ? profile_get_name(prch->prch_pro) : "<none>";
     if (ch)
       tvhtrace("subscription", "%04X: creating subscription for %s weight %d using profile %s",
                shortid(s), channel_get_name(ch), weight, pro_name);
@@ -917,9 +926,13 @@ subscription_create_msg(th_subscription_t *s, const char *lang)
     htsmsg_add_str(m, "service", s->ths_service->s_nicename ?: "");
 
     if ((di = s->ths_service->s_descramble_info) != NULL) {
-      snprintf(buf, sizeof(buf), "%04X:%06X(%ums)-%s%s%s",
-               di->caid, di->provid, di->ecmtime, di->from,
-               di->reader[0] ? "/" : "", di->reader);
+      if (di->caid == 0 && di->ecmtime == 0) {
+        snprintf(buf, sizeof(buf), N_("Failed"));
+      } else {
+        snprintf(buf, sizeof(buf), "%04X:%06X(%ums)-%s%s%s",
+                 di->caid, di->provid, di->ecmtime, di->from,
+                 di->reader[0] ? "/" : "", di->reader);
+      }
       htsmsg_add_str(m, "descramble", buf);
     }
 

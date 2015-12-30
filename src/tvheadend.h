@@ -89,6 +89,7 @@ typedef struct str_list
 extern int tvheadend_running;
 
 extern pthread_mutex_t global_lock;
+extern pthread_mutex_t tasklet_lock;
 extern pthread_mutex_t fork_lock;
 
 extern int tvheadend_webui_port;
@@ -133,6 +134,14 @@ typedef enum {
   COMMERCIAL_NO,
 } th_commercial_advice_t;
 
+
+/*
+ *
+ */
+#define UILEVEL_DEFAULT  (-1)
+#define UILEVEL_BASIC    0
+#define UILEVEL_ADVANCED 1
+#define UILEVEL_EXPERT   2
 
 /*
  * global timer
@@ -201,6 +210,7 @@ void tasklet_disarm(tasklet_t *gti);
  */
 LIST_HEAD(access_entry_list, access_entry);
 LIST_HEAD(th_subscription_list, th_subscription);
+LIST_HEAD(dvr_vfs_list, dvr_vfs);
 LIST_HEAD(dvr_config_list, dvr_config);
 LIST_HEAD(dvr_entry_list, dvr_entry);
 TAILQ_HEAD(ref_update_queue, ref_update);

@@ -3,6 +3,10 @@ tvheadend.accessupdate = null;
 tvheadend.capabilities = null;
 tvheadend.admin = false;
 tvheadend.dialog = null;
+tvheadend.uilevel = 'expert';
+tvheadend.uilevel_nochange = false;
+tvheadend.quicktips = true;
+tvheadend.wizard = null;
 
 tvheadend.cookieProvider = new Ext.state.CookieProvider({
   // 7 days from now
@@ -17,16 +21,45 @@ tvheadend.regexEscape = function(s) {
 }
 
 tvheadend.fromCSV = function(s) {
-  var a = s.split(',');
-  var r = [];
-  for (var i in a) {
-    var v = a[i];
-    if (v[0] == '"' && v[v.length-1] == '"')
-      r.push(v.substring(1, v.length - 1));
-    else
-      r.push(v);
-  }
-  return r;
+    var a = s.split(',');
+    var r = [];
+    for (var i in a) {
+        var v = a[i];
+        if (v[0] == '"' && v[v.length-1] == '"')
+            r.push(v.substring(1, v.length - 1));
+        else
+            r.push(v);
+    }
+    return r;
+}
+
+/**
+ * Change uilevel
+ */
+tvheadend.uilevel_match = function(target, current) {
+    if (current !== 'expert') {
+        if (current === 'advanced' && target === 'expert')
+            return false;
+        else if (current === 'basic' && target !== 'basic')
+            return false;
+    }
+    return true;
+}
+
+/*
+ * Select specific tab
+ */
+tvheadend.select_tab = function(id)
+{
+    var i = Ext.getCmp(id);
+    var c = i ? i.ownerCt : null;
+    while (c) {
+        if ('activeTab' in c) {
+            c.setActiveTab(i);
+        }
+        i = c;
+        c = c.ownerCt;
+    }
 }
 
 /**
@@ -389,8 +422,8 @@ tvheadend.VideoPlayer = function(url) {
 };
 
 function diskspaceUpdate(o) {
-  if ('freediskspace' in o && 'totaldiskspace' in o)
-    tvheadend.rootTabPanel.setDiskSpace(o.freediskspace, o.totaldiskspace);
+  if ('freediskspace' in o && 'useddiskspace' in o && 'totaldiskspace' in o)
+    tvheadend.rootTabPanel.setDiskSpace(o.freediskspace, o.useddiskspace, o.totaldiskspace);
 }
 
 /**
@@ -406,14 +439,22 @@ function accessUpdate(o) {
 
     tvheadend.admin = o.admin == true;
 
+    if (o.uilevel)
+        tvheadend.uilevel = o.uilevel;
+        
+    tvheadend.quicktips = o.quicktips;
+
+    if (o.uilevel_nochange)
+        tvheadend.uilevel_nochange = true;
+
     if ('info_area' in o)
         tvheadend.rootTabPanel.setInfoArea(o.info_area);
     if ('username' in o)
         tvheadend.rootTabPanel.setLogin(o.username);
     if ('address' in o)
         tvheadend.rootTabPanel.setAddress(o.address);
-    if ('freediskspace' in o && 'totaldiskspace' in o)
-        tvheadend.rootTabPanel.setDiskSpace(o.freediskspace, o.totaldiskspace);
+    if ('freediskspace' in o && 'useddiskspace' in o && 'totaldiskspace' in o)
+        tvheadend.rootTabPanel.setDiskSpace(o.freediskspace, o.useddiskspace, o.totaldiskspace);
 
     if ('cookie_expires' in o && o.cookie_expires > 0)
         tvheadend.cookieProvider.expires =
@@ -439,6 +480,7 @@ function accessUpdate(o) {
 
         /* General */
         var general = new Ext.TabPanel({
+            tabIndex: 0,
             activeTab: 0,
             autoScroll: true,
             title: _('General'),
@@ -454,6 +496,7 @@ function accessUpdate(o) {
 
         /* Users */
         var users = new Ext.TabPanel({
+            tabIndex: 1,
             activeTab: 0,
             autoScroll: true,
             title: _('Users'),
@@ -469,6 +512,7 @@ function accessUpdate(o) {
 
         /* DVB inputs, networks, muxes, services */
         var dvbin = new Ext.TabPanel({
+            tabIndex: 2,
             activeTab: 0,
             autoScroll: true,
             title: _('DVB Inputs'),
@@ -487,6 +531,7 @@ function accessUpdate(o) {
 
         /* Channel / EPG */
         var chepg = new Ext.TabPanel({
+            tabIndex: 3,
             activeTab: 0,
             autoScroll: true,
             title: _('Channel / EPG'),
@@ -504,6 +549,7 @@ function accessUpdate(o) {
 
         /* Stream Config */
         var stream = new Ext.TabPanel({
+            tabIndex: 4,
             activeTab: 0,
             autoScroll: true,
             title: _('Stream'),
@@ -516,6 +562,7 @@ function accessUpdate(o) {
 
         /* DVR / Timeshift */
         var tsdvr = new Ext.TabPanel({
+            tabIndex: 5,
             activeTab: 0,
             autoScroll: true,
             title: _('Recording'),
@@ -530,10 +577,10 @@ function accessUpdate(o) {
 
         /* CSA */
         if (tvheadend.capabilities.indexOf('caclient') !== -1)
-            tvheadend.caclient(cp, null);
+            tvheadend.caclient(cp, 6);
 
         /* Debug */
-        tvheadend.tvhlog(cp);
+        tvheadend.tvhlog(cp, 7);
 
         /* Finish */
         tvheadend.rootTabPanel.add(cp);
@@ -559,6 +606,9 @@ function accessUpdate(o) {
     }
 
     tvheadend.rootTabPanel.doLayout();
+
+    if (o.wizard)
+        tvheadend.wizard_start(o.wizard);
 }
 
 /**
@@ -686,21 +736,21 @@ tvheadend.RootTabPanel = Ext.extend(Ext.TabPanel, {
             Ext.get(this.extra.login.tabEl).child('span.x-tab-strip-extra-comp', true).qtip = addr;
     },
 
-    setDiskSpace: function(bfree, btotal) {
+    setDiskSpace: function(bfree, bused, btotal) {
         if (!('storage' in this.extra)) return;
         human = function(val) {
-          if (val > 1000000000)
-            val = parseInt(val / 1000000000) + _('GB');
-          if (val > 1000000)
-            val = parseInt(val / 1000000) + _('MB');
-          if (val > 1000)
-            val = parseInt(val / 1000) + _('KB');
+          if (val > 1073741824)
+            val = parseInt(val / 1073741824) + _('GiB');
+          if (val > 1048576)
+            val = parseInt(val / 1048576) + _('MiB');
+          if (val > 1024)
+            val = parseInt(val / 1024) + _('KiB');
           return val;
         };
-        text = _('Storage space') + ':&nbsp;<b>' + human(bfree) + '/' + human(btotal) + '</b>';
+        text = _('Storage space') + ':&nbsp;<b>' + human(bfree) + '/' + human(bused) + '/' + human(btotal) + '</b>';
         var el = Ext.get(this.extra.storage.tabEl).child('span.x-tab-strip-extra-comp', true);
         el.innerHTML = text;
-        el.qtip = _('Free') + ': ' + human(bfree) + ' ' + _('Total') + ': ' + human(btotal);
+        el.qtip = _('Free') + ': ' + human(bfree) + ' ' + _('Used by tvheadend') + ': ' + human(bused) + ' ' + _('Total') + ': ' + human(btotal);
     },
 
     setTime: function(stime) {

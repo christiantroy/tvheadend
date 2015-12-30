@@ -58,6 +58,7 @@ typedef struct passwd_entry {
   char *pw_password2;
 
   int   pw_enabled;
+  int   pw_wizard;
 
   char *pw_comment;
 } passwd_entry_t;
@@ -97,7 +98,10 @@ typedef struct access_entry {
   char *ae_lang_ui;
 
   int ae_index;
+  int ae_wizard;
   int ae_enabled;
+  int ae_uilevel;
+  int ae_uilevel_nochange;
 
   int ae_streaming;
   int ae_adv_streaming;
@@ -149,6 +153,8 @@ typedef struct access {
   uint32_t  aa_conn_limit_dvr;
   uint32_t  aa_conn_streaming;
   uint32_t  aa_conn_dvr;
+  int       aa_uilevel;
+  int       aa_uilevel_nochange;
 } access_t;
 
 TAILQ_HEAD(access_ticket_queue, access_ticket);
@@ -265,6 +271,12 @@ access_entry_create(const char *uuid, htsmsg_t *conf);
  *
  */
 void
+access_entry_destroy(access_entry_t *ae, int delconf);
+
+/**
+ *
+ */
+void
 access_entry_save(access_entry_t *ae);
 
 /**
@@ -282,6 +294,8 @@ access_destroy_by_channel_tag(struct channel_tag *ct, int delconf);
  */
 passwd_entry_t *
 passwd_entry_create(const char *uuid, htsmsg_t *conf);
+void
+passwd_entry_destroy(passwd_entry_t *ae, int delconf);
 void
 passwd_entry_save(passwd_entry_t *pw);
 

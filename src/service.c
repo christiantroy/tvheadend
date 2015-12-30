@@ -168,6 +168,7 @@ const idclass_t service_class = {
       .name     = N_("Automatic checking"),
       .list     = service_class_auto_list,
       .off      = offsetof(service_t, s_auto),
+      .opts     = PO_ADVANCED,
     },
     {
       .type     = PT_STR,
@@ -185,6 +186,7 @@ const idclass_t service_class = {
       .id       = "priority",
       .name     = N_("Priority (-10..10)"),
       .off      = offsetof(service_t, s_prio),
+      .opts     = PO_ADVANCED
     },
     {
       .type     = PT_BOOL,
@@ -198,7 +200,7 @@ const idclass_t service_class = {
       .id       = "caid",
       .name     = N_("CAID"),
       .get      = service_class_caid_get,
-      .opts     = PO_NOSAVE | PO_RDONLY | PO_HIDDEN,
+      .opts     = PO_NOSAVE | PO_RDONLY | PO_HIDDEN | PO_EXPERT,
     },
     {}
   }
@@ -389,6 +391,7 @@ service_build_filter(service_t *t)
   caid_t *ca, *ca2;
   int i, n, p, o, exclusive, sindex;
   uint32_t mask;
+  char ubuf[UUID_HEX_SIZE];
 
   /* rebuild the filtered and ordered components */
   TAILQ_INIT(&t->s_filt_components);
@@ -444,7 +447,7 @@ filter:
             strncmp(esf->esf_language, st->es_lang, 4))
           continue;
         if (esf->esf_service[0]) {
-          if (strcmp(esf->esf_service, idnode_uuid_as_sstr(&t->s_id)))
+          if (strcmp(esf->esf_service, idnode_uuid_as_str(&t->s_id, ubuf)))
             continue;
           if (esf->esf_pid && esf->esf_pid != st->es_pid)
             continue;
@@ -683,7 +686,7 @@ service_find_instance
             pro->pro_svfilter == PROFILE_SVF_NONE ||
             (pro->pro_svfilter == PROFILE_SVF_SD && service_is_sdtv(s)) ||
             (pro->pro_svfilter == PROFILE_SVF_HD && service_is_hdtv(s))) {
-          s->s_enlist(s, ti, sil, flags);
+          s->s_enlist(s, ti, sil, flags, weight);
           enlisted++;
         }
       }
@@ -692,11 +695,11 @@ service_find_instance
       LIST_FOREACH(ilm, &ch->ch_services, ilm_in2_link) {
         s = (service_t *)ilm->ilm_in1;
         if (s->s_is_enabled(s, flags))
-          s->s_enlist(s, ti, sil, flags);
+          s->s_enlist(s, ti, sil, flags, weight);
       }
     }
   } else {
-    s->s_enlist(s, ti, sil, flags);
+    s->s_enlist(s, ti, sil, flags, weight);
   }
 
   /* Clean */
@@ -779,6 +782,8 @@ void
 service_unref(service_t *t)
 {
   if((atomic_add(&t->s_refcount, -1)) == 1) {
+    if (t->s_unref)
+      t->s_unref(t);
     free(t->s_nicename);
     free(t);
   }
@@ -806,11 +811,11 @@ service_destroy(service_t *t, int delconf)
   th_subscription_t *s;
   idnode_list_mapping_t *ilm;
 
+  lock_assert(&global_lock);
+
   if(t->s_delete != NULL)
     t->s_delete(t, delconf);
 
-  lock_assert(&global_lock);
-  
   service_mapper_remove(t);
 
   while((s = LIST_FIRST(&t->s_subscriptions)) != NULL)
