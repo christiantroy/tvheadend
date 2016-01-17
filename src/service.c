@@ -1468,9 +1468,9 @@ service_done(void)
 void
 service_source_info_free(struct source_info *si)
 {
-  free(si->si_device);
   free(si->si_adapter);
   free(si->si_network);
+  free(si->si_network_type);
   free(si->si_mux);
   free(si->si_provider);
   free(si->si_service);
@@ -1481,10 +1481,11 @@ service_source_info_free(struct source_info *si)
 void
 service_source_info_copy(source_info_t *dst, const source_info_t *src)
 {
-#define COPY(x) dst->si_##x = src->si_##x ? strdup(src->si_##x) : NULL
-  COPY(device);
+  *dst = *src;
+#define COPY(x) if (src->si_##x) dst->si_##x = strdup(src->si_##x)
   COPY(adapter);
   COPY(network);
+  COPY(network_type);
   COPY(mux);
   COPY(provider);
   COPY(service);

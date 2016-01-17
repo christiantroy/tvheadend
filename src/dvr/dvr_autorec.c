@@ -102,10 +102,11 @@ dvr_autorec_completed(dvr_autorec_entry_t *dae, int error_code)
 {
   uint32_t count, total = 0;
   dvr_entry_t *de, *de_prev;
-  uint32_t max_count = dvr_autorec_get_max_count(dae);
+  uint32_t max_count;
   char ubuf[UUID_HEX_SIZE];
 
   if (dae == NULL) return;
+  max_count = dvr_autorec_get_max_count(dae);
   if (max_count <= 0) return;
   while (1) {
     count = 0;
@@ -920,16 +921,28 @@ dvr_autorec_entry_class_dedup_list ( void *o, const char *lang )
   static const struct strtab tab[] = {
     { N_("Record all"),
         DVR_AUTOREC_RECORD_ALL },
-    { N_("Record if different episode number"),
+    { N_("All: Record if different episode number"),
         DVR_AUTOREC_RECORD_DIFFERENT_EPISODE_NUMBER },
-    { N_("Record if different subtitle"),
+    { N_("All: Record if different subtitle"),
         DVR_AUTOREC_RECORD_DIFFERENT_SUBTITLE },
-    { N_("Record if different description"),
+    { N_("All: Record if different description"),
         DVR_AUTOREC_RECORD_DIFFERENT_DESCRIPTION },
-    { N_("Record once per week"),
+    { N_("All: Record once per week"),
         DVR_AUTOREC_RECORD_ONCE_PER_WEEK },
-    { N_("Record once per day"),
+    { N_("All: Record once per day"),
         DVR_AUTOREC_RECORD_ONCE_PER_DAY },
+    { N_("Local: Record if different episode number"),
+        DVR_AUTOREC_LRECORD_DIFFERENT_EPISODE_NUMBER },
+    { N_("Local: Record if different title"),
+        DVR_AUTOREC_LRECORD_DIFFERENT_TITLE },
+    { N_("Local: Record if different subtitle"),
+        DVR_AUTOREC_LRECORD_DIFFERENT_SUBTITLE },
+    { N_("Local: Record if different description"),
+        DVR_AUTOREC_LRECORD_DIFFERENT_DESCRIPTION },
+    { N_("Local: Record once per week"),
+        DVR_AUTOREC_LRECORD_ONCE_PER_WEEK },
+    { N_("Local: Record once per day"),
+        DVR_AUTOREC_LRECORD_ONCE_PER_DAY },
   };
   return strtab2htsmsg(tab, 1, lang);
 }

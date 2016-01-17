@@ -35,18 +35,11 @@ typedef struct timeshift_conf {
   uint64_t  ram_segment_size;
   uint64_t  total_ram_size;
   int       ram_only;
+  int       ram_fit;
 } timeshift_conf_t;
 
 extern struct timeshift_conf timeshift_conf;
 extern const idclass_t timeshift_conf_class;
-
-typedef struct timeshift_status
-{
-  int     full;
-  int64_t shift;
-  int64_t pts_start;
-  int64_t pts_end;
-} timeshift_status_t;
 
 void timeshift_init ( void );
 void timeshift_term ( void );

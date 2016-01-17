@@ -96,18 +96,6 @@ extern int tvheadend_webui_port;
 extern int tvheadend_webui_debug;
 extern int tvheadend_htsp_port;
 
-typedef struct source_info {
-  char *si_device;
-  char *si_adapter;
-  char *si_network;
-  char *si_satpos;
-  char *si_mux;
-  char *si_provider;
-  char *si_service;
-  int   si_type;
-} source_info_t;
-
-
 static inline void
 lock_assert0(pthread_mutex_t *l, const char *file, int line)
 {
@@ -310,6 +298,17 @@ typedef struct descramble_info {
 } descramble_info_t;
 
 /**
+ *
+ */
+typedef struct timeshift_status
+{
+  int     full;
+  int64_t shift;
+  int64_t pts_start;
+  int64_t pts_end;
+} timeshift_status_t;
+
+/**
  * Streaming skip
  */
 typedef struct streaming_skip
@@ -326,6 +325,9 @@ typedef struct streaming_skip
     off_t   size;
     int64_t time;
   };
+#if ENABLE_TIMESHIFT
+  timeshift_status_t timeshift;
+#endif
 } streaming_skip_t;
 
 
@@ -515,7 +517,7 @@ typedef struct streaming_message {
   TAILQ_ENTRY(streaming_message) sm_link;
   streaming_message_type_t sm_type;
 #if ENABLE_TIMESHIFT
-  int64_t  sm_time;
+  int64_t sm_time;
 #endif
   union {
     void *sm_data;
@@ -700,7 +702,7 @@ static inline int64_t ts_rescale(int64_t ts, int tb)
   return (ts * tb ) / 90000LL;
 }
 
-static inline int64_t ts_rescale_i(int64_t ts, int tb)
+static inline int64_t ts_rescale_inv(int64_t ts, int tb)
 {
   return (ts * 90000LL) / tb;
 }

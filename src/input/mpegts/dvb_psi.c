@@ -432,6 +432,7 @@ dvb_bat_find_service( dvb_bat_id_t *bi, mpegts_service_t *s,
   if (!bs) {
     bs = calloc(1, sizeof(*bs));
     bs->svc = s;
+    service_ref((service_t *)s);
     TAILQ_INSERT_TAIL(&bi->services, bs, link);
   }
   if (lcn != UINT_MAX && !bs->lcn_dtag) {
@@ -812,6 +813,7 @@ dvb_bskyb_local_channels
       if (s) {
         bs = calloc(1, sizeof(*bs));
         bs->svc = s;
+        service_ref((service_t *)s);
         TAILQ_INSERT_TAIL(&bi->services, bs, link);
       }
     }
@@ -1017,6 +1019,8 @@ dvb_bat_destroy_lists( mpegts_table_t *mt )
   while ((bi = LIST_FIRST(&b->bats)) != NULL) {
     while ((bs = TAILQ_FIRST(&bi->services)) != NULL) {
       TAILQ_REMOVE(&bi->services, bs, link);
+      if (bs->svc)
+        service_unref((service_t *)bs->svc);
       free(bs);
     }
     while ((fs = TAILQ_FIRST(&bi->fservices)) != NULL) {
@@ -2147,6 +2151,7 @@ psi_parse_pmt
   int version;
   int position;
   int tt_position;
+  int video_stream;
   const char *lang;
   uint8_t audio_type;
 
@@ -2213,6 +2218,7 @@ psi_parse_pmt
     tt_position = 1000;
     lang = NULL;
     audio_type = 0;
+    video_stream = 0;
 
     switch(estype) {
     case 0x01:
@@ -2270,6 +2276,10 @@ psi_parse_pmt
         update |= psi_desc_ca(t, ptr, dlen);
         break;
 
+      case DVB_DESC_VIDEO_STREAM:
+        video_stream = dlen > 0 && SCT_ISVIDEO(hts_stream_type);
+        break;
+
       case DVB_DESC_REGISTRATION:
         if(mux->mm_pmt_ac3 != MM_AC3_PMT_N05 && dlen == 4 &&
            ptr[0] == 'A' && ptr[1] == 'C' && ptr[2] == '-' &&  ptr[3] == '3')
@@ -2303,7 +2313,7 @@ psi_parse_pmt
         break;
 
       case DVB_DESC_SUBTITLE:
-        if(dlen < 8)
+        if(dlen < 8 || video_stream)
           break;
 
         lang = lang_code_get2((const char*)ptr, 3);
@@ -2576,7 +2586,10 @@ psi_tables_install ( mpegts_input_t *mi, mpegts_mux_t *mm,
   case DVB_SYS_DVBT2:
   case DVB_SYS_DVBS:
   case DVB_SYS_DVBS2:
+  case DVB_SYS_ISDBT:
+  case DVB_SYS_ISDBC:
   case DVB_SYS_ISDBS:
+  case DVB_SYS_DAB:
     psi_tables_dvb(mm);
     break;
   case DVB_SYS_TURBO:
@@ -2589,12 +2602,9 @@ psi_tables_install ( mpegts_input_t *mi, mpegts_mux_t *mm,
     break;
   case DVB_SYS_NONE:
   case DVB_SYS_DVBH:
-  case DVB_SYS_ISDBT:
-  case DVB_SYS_ISDBC:
   case DVB_SYS_DTMB:
   case DVB_SYS_CMMB:
   case DVB_SYS_DSS:
-  case DVB_SYS_DAB:
     break;
   case DVB_SYS_ATSC_ALL:
     psi_tables_atsc_c(mm);

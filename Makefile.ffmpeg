@@ -66,7 +66,7 @@ COMPONENTS      = avutil avformat avcodec swresample swscale avfilter avresample
 PROTOCOLS       = file
 DECODERS        = mpeg2video mp2 ac3 eac3 h264 h264_vdpau hevc aac aac_latm vorbis libvorbis
 ENCODERS        = mpeg2video mp2 libx264 libvpx_vp8 libvpx_vp9 aac libaacplus vorbis libvorbis
-MUXERS          = mpegts mpeg2dvd matroska webm
+MUXERS          = mpegts mpeg2dvd matroska webm mp4
 BSFS            = h264_mp4toannexb hevc_mp4toannexb
 FILTERS         = yadif scale
 
@@ -261,6 +261,10 @@ $(LIBAVDIR)/$(LIBX264)/.tvh_build: $(LIBAVDIR)/$(LIBX264)/.tvh_download
 
 else
 
+ifneq (,$(DEB_BUILD_GNU_TYPE))
+LIBX264_HOST := --host=$(DEB_BUILD_GNU_TYPE)
+endif
+
 $(LIBAVDIR)/$(LIBX264)/.tvh_download:
 	$(call DOWNLOAD,$(LIBX264_URL),$(LIBAVDIR)/$(LIBX264_TB),$(LIBX264_SHA1))
 	#rm -rf $(LIBAVDIR)/x264-snapshot-*
@@ -280,7 +284,8 @@ $(LIBAVDIR)/$(LIBX264)/.tvh_build: \
 		--disable-lavf \
 		--disable-ffms \
 		--disable-gpac \
-		--disable-lsmash
+		--disable-lsmash \
+		$(LIBX264_HOST)
 	DESTDIR=$(LIBAVDIR)/build \
 		$(MAKE) -C $(LIBAVDIR)/$(LIBX264) install
 	@touch $@

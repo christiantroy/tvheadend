@@ -21,6 +21,7 @@
 
 #include "packet.h"
 #include "htsmsg.h"
+#include "service.h"
 
 
 typedef struct streaming_start_component {
@@ -108,6 +109,11 @@ streaming_target_deliver(streaming_target_t *st, streaming_message_t *sm)
   { st->st_cb(st->st_opaque, sm); }
 
 void streaming_target_deliver2(streaming_target_t *st, streaming_message_t *sm);
+
+static inline void streaming_start_ref(streaming_start_t *ss)
+{
+  atomic_add(&ss->ss_refcount, 1);
+}
 
 void streaming_start_unref(streaming_start_t *ss);
 

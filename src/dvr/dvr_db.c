@@ -42,6 +42,7 @@ static int dvr_in_init;
 static gtimer_t dvr_dbus_timer;
 #endif
 
+static void dvr_entry_deferred_destroy(dvr_entry_t *de);
 static void dvr_entry_set_timer(dvr_entry_t *de);
 static void dvr_timer_rerecord(void *aux);
 static void dvr_timer_expire(void *aux);
@@ -255,7 +256,7 @@ dvr_entry_get_extra_time_post( dvr_entry_t *de )
   return extra;
 }
 
-const char *
+char *
 dvr_entry_get_retention_string ( dvr_entry_t *de )
 {
   char buf[24];
@@ -271,7 +272,7 @@ dvr_entry_get_retention_string ( dvr_entry_t *de )
   return strdup(buf);
 }
 
-const char *
+char *
 dvr_entry_get_removal_string ( dvr_entry_t *de )
 {
   char buf[24];
@@ -403,9 +404,9 @@ dvr_entry_retention_timer(dvr_entry_t *de)
     }
     save = 0;
     if (dvr_get_filename(de))
-      save = dvr_entry_delete(de); // delete actual file
+      save = dvr_entry_delete(de);    // delete actual file
     if (retention == DVR_RET_ONREMOVE) {
-      dvr_entry_destroy(de, 1);   // also remove database entry
+      dvr_entry_deferred_destroy(de); // also remove database entry
       return;
     }
     if (save)
@@ -1063,92 +1064,173 @@ not_so_good:
 /**
  *
  */
-static dvr_entry_t *_dvr_duplicate_event(dvr_entry_t* de)
+typedef int (*_dvr_duplicate_fcn_t)(dvr_entry_t *de, dvr_entry_t *de2, void **aux);
+
+static int _dvr_duplicate_epnum(dvr_entry_t *de, dvr_entry_t *de2, void **aux)
 {
+  return !strempty(de2->de_episode) && !strcmp(de->de_episode, de2->de_episode);
+}
+
+static int _dvr_duplicate_title(dvr_entry_t *de, dvr_entry_t *de2, void **aux)
+{
+  return !lang_str_compare(de->de_title, de2->de_title);
+}
+
+static int _dvr_duplicate_subtitle(dvr_entry_t *de, dvr_entry_t *de2, void **aux)
+{
+  return !lang_str_compare(de->de_subtitle, de2->de_subtitle);
+}
+
+static int _dvr_duplicate_desc(dvr_entry_t *de, dvr_entry_t *de2, void **aux)
+{
+  return !lang_str_compare(de->de_desc, de2->de_desc);
+}
+
+static int _dvr_duplicate_per_week(dvr_entry_t *de, dvr_entry_t *de2, void **aux)
+{
+  struct tm *de1_start = *aux, de2_start;
+  if (de1_start == NULL) {
+    de1_start = calloc(1, sizeof(*de1_start));
+    localtime_r(&de->de_start, de1_start);
+    de1_start->tm_mday -= (de1_start->tm_wday + 6) % 7; // week = mon-sun
+    mktime(de1_start); // adjusts de_start
+    *aux = de1_start;
+  }
+  localtime_r(&de2->de_start, &de2_start);
+  de2_start.tm_mday -= (de2_start.tm_wday + 6) % 7; // week = mon-sun
+  mktime(&de2_start); // adjusts de2_start
+  return de1_start->tm_year == de2_start.tm_year &&
+         de1_start->tm_yday == de2_start.tm_yday;
+}
+
+static int _dvr_duplicate_per_day(dvr_entry_t *de, dvr_entry_t *de2, void **aux)
+{
+  struct tm *de1_start = *aux, de2_start;
+  if (de1_start == NULL) {
+    de1_start = calloc(1, sizeof(*de1_start));
+    localtime_r(&de->de_start, de1_start);
+    *aux = de1_start;
+  }
+  localtime_r(&de2->de_start, &de2_start);
+  return de1_start->tm_year == de2_start.tm_year &&
+         de1_start->tm_yday == de2_start.tm_yday;
+}
+
+/**
+ *
+ */
+static dvr_entry_t *_dvr_duplicate_event(dvr_entry_t *de)
+{
+  static _dvr_duplicate_fcn_t fcns[] = {
+    [DVR_AUTOREC_RECORD_DIFFERENT_EPISODE_NUMBER]  = _dvr_duplicate_epnum,
+    [DVR_AUTOREC_LRECORD_DIFFERENT_EPISODE_NUMBER] = _dvr_duplicate_epnum,
+    [DVR_AUTOREC_LRECORD_DIFFERENT_TITLE]          = _dvr_duplicate_title,
+    [DVR_AUTOREC_RECORD_DIFFERENT_SUBTITLE]        = _dvr_duplicate_subtitle,
+    [DVR_AUTOREC_LRECORD_DIFFERENT_SUBTITLE]       = _dvr_duplicate_subtitle,
+    [DVR_AUTOREC_RECORD_DIFFERENT_DESCRIPTION]     = _dvr_duplicate_desc,
+    [DVR_AUTOREC_LRECORD_DIFFERENT_DESCRIPTION]    = _dvr_duplicate_desc,
+    [DVR_AUTOREC_RECORD_ONCE_PER_WEEK]             = _dvr_duplicate_per_week,
+    [DVR_AUTOREC_LRECORD_ONCE_PER_WEEK]            = _dvr_duplicate_per_week,
+    [DVR_AUTOREC_RECORD_ONCE_PER_DAY]              = _dvr_duplicate_per_day,
+    [DVR_AUTOREC_LRECORD_ONCE_PER_DAY]             = _dvr_duplicate_per_day,
+  };
   dvr_entry_t *de2;
-  struct tm de_start;
+ _dvr_duplicate_fcn_t match;
   int record;
+  void *aux;
 
   if (!de->de_autorec)
     return NULL;
-
-  record = de->de_autorec->dae_record;
-  localtime_r(&de->de_start, &de_start);
-
-  switch (record) {
-    case DVR_AUTOREC_RECORD_ALL:
-      return NULL;
-    case DVR_AUTOREC_RECORD_DIFFERENT_EPISODE_NUMBER:
-      if (strempty(de->de_episode))
-        return NULL;
-      break;
-    case DVR_AUTOREC_RECORD_DIFFERENT_SUBTITLE:
-      if (lang_str_empty(de->de_subtitle))
-        return NULL;
-      break;
-    case DVR_AUTOREC_RECORD_DIFFERENT_DESCRIPTION:
-      if (lang_str_empty(de->de_desc))
-        return NULL;
-      break;
-    case DVR_AUTOREC_RECORD_ONCE_PER_WEEK:
-      de_start.tm_mday -= (de_start.tm_wday + 6) % 7; // week = mon-sun
-      mktime(&de_start); // adjusts de_start
-      break;
-  }
 
   // title not defined, can't be deduped
   if (lang_str_empty(de->de_title))
     return NULL;
 
-  LIST_FOREACH(de2, &dvrentries, de_global_link) {
-    if (de == de2)
-      continue;
+  record = de->de_autorec->dae_record;
 
-    // only earlier recordings qualify as master
-    if (de2->de_start > de->de_start)
-      continue;
+  switch (record) {
+    case DVR_AUTOREC_RECORD_ALL:
+      return NULL;
+    case DVR_AUTOREC_RECORD_DIFFERENT_EPISODE_NUMBER:
+    case DVR_AUTOREC_LRECORD_DIFFERENT_EPISODE_NUMBER:
+      if (strempty(de->de_episode))
+        return NULL;
+      break;
+    case DVR_AUTOREC_RECORD_DIFFERENT_SUBTITLE:
+    case DVR_AUTOREC_LRECORD_DIFFERENT_SUBTITLE:
+      if (lang_str_empty(de->de_subtitle))
+        return NULL;
+      break;
+    case DVR_AUTOREC_RECORD_DIFFERENT_DESCRIPTION:
+    case DVR_AUTOREC_LRECORD_DIFFERENT_DESCRIPTION:
+      if (lang_str_empty(de->de_desc))
+        return NULL;
+      break;
+    case DVR_AUTOREC_RECORD_ONCE_PER_WEEK:
+    case DVR_AUTOREC_LRECORD_ONCE_PER_WEEK:
+      break;
+    case DVR_AUTOREC_LRECORD_DIFFERENT_TITLE:
+      break;
+   default:
+      abort();
+  }
 
-    // only successful earlier recordings qualify as master
-    if (de2->de_sched_state == DVR_MISSED_TIME ||
-        (de2->de_sched_state == DVR_COMPLETED &&
-         de2->de_last_error != SM_CODE_OK))
-      continue;
+  match = fcns[record];
+  aux   = NULL;
 
-    // if titles are not defined or do not match, don't dedup
-    if (lang_str_compare(de->de_title, de2->de_title))
-      continue;
+  assert(match);
 
-    switch (record) {
-      case DVR_AUTOREC_RECORD_DIFFERENT_EPISODE_NUMBER:
-        if (!strempty(de2->de_episode) && !strcmp(de->de_episode, de2->de_episode))
-          return de2;
-        break;
-      case DVR_AUTOREC_RECORD_DIFFERENT_SUBTITLE:
-        if (!lang_str_compare(de->de_subtitle, de2->de_subtitle))
-          return de2;
-        break;
-      case DVR_AUTOREC_RECORD_DIFFERENT_DESCRIPTION:
-        if (!lang_str_compare(de->de_desc, de2->de_desc))
-          return de2;
-        break;
-      case DVR_AUTOREC_RECORD_ONCE_PER_WEEK: {
-        struct tm de2_start;
-        localtime_r(&de2->de_start, &de2_start);
-        de2_start.tm_mday -= (de2_start.tm_wday + 6) % 7; // week = mon-sun
-        mktime(&de2_start); // adjusts de2_start
-        if (de_start.tm_year == de2_start.tm_year && de_start.tm_yday == de2_start.tm_yday)
-          return de2;
-        break;
+  if (record < DVR_AUTOREC_LRECORD_DIFFERENT_EPISODE_NUMBER) {
+    LIST_FOREACH(de2, &dvrentries, de_global_link) {
+      if (de == de2)
+        continue;
+
+      // only earlier recordings qualify as master
+      if (de2->de_start > de->de_start)
+        continue;
+
+      // only successful earlier recordings qualify as master
+      if (de2->de_sched_state == DVR_MISSED_TIME ||
+          (de2->de_sched_state == DVR_COMPLETED &&
+           de2->de_last_error != SM_CODE_OK))
+        continue;
+
+      // if titles are not defined or do not match, don't dedup
+      if (lang_str_compare(de->de_title, de2->de_title))
+        continue;
+      
+      if (match(de, de2, &aux)) {
+        free(aux);
+        return de2;
       }
-      case DVR_AUTOREC_RECORD_ONCE_PER_DAY: {
-        struct tm de2_start;
-        localtime_r(&de2->de_start, &de2_start);
-        if (de_start.tm_year == de2_start.tm_year && de_start.tm_yday == de2_start.tm_yday)
-          return de2;
-        break;
+    }
+  } else {
+    LIST_FOREACH(de2, &de->de_autorec->dae_spawns, de_autorec_link) {
+      if (de == de2)
+        continue;
+
+      // only earlier recordings qualify as master
+      if (de2->de_start > de->de_start)
+        continue;
+
+      // only successful earlier recordings qualify as master
+      if (de2->de_sched_state == DVR_MISSED_TIME ||
+          (de2->de_sched_state == DVR_COMPLETED &&
+           de2->de_last_error != SM_CODE_OK))
+        continue;
+
+      // if titles are not defined or do not match, don't dedup
+      if (record != DVR_AUTOREC_LRECORD_DIFFERENT_TITLE &&
+          lang_str_compare(de->de_title, de2->de_title))
+        continue;
+      
+      if (match(de, de2, &aux)) {
+        free(aux);
+        return de2;
       }
     }
   }
+  free(aux);
   return NULL;
 }
 
@@ -1253,6 +1335,7 @@ dvr_entry_destroy(dvr_entry_t *de, int delconf)
 #endif
 
   gtimer_disarm(&de->de_timer);
+  gtimer_disarm(&de->de_deferred_timer);
 #if ENABLE_DBUS_1
   gtimer_arm(&dvr_dbus_timer, dvr_dbus_timer_cb, NULL, 2);
 #endif
@@ -1268,6 +1351,20 @@ dvr_entry_destroy(dvr_entry_t *de, int delconf)
     dvr_entry_change_parent_child(de, NULL, de, delconf);
 
   dvr_entry_dec_ref(de);
+}
+
+/**
+ *
+ */
+static void _deferred_destroy_cb(void *aux)
+{
+  dvr_entry_destroy(aux, 1);
+}
+
+static void
+dvr_entry_deferred_destroy(dvr_entry_t *de)
+{
+  gtimer_arm(&de->de_deferred_timer, _deferred_destroy_cb, de, 0);
 }
 
 /**
@@ -1492,7 +1589,7 @@ static dvr_entry_t *_dvr_entry_update
   if (e && e->episode && e->episode->subtitle) {
     save |= lang_str_set2(&de->de_subtitle, e->episode->subtitle) ? DVR_UPDATED_SUBTITLE : 0;
   } else if (subtitle) {
-    save |= lang_str_set(&de->de_title, subtitle, lang) ? DVR_UPDATED_SUBTITLE : 0;
+    save |= lang_str_set(&de->de_subtitle, subtitle, lang) ? DVR_UPDATED_SUBTITLE : 0;
   }
 
   /* EID */
@@ -1582,7 +1679,7 @@ dvr_entry_update
 void 
 dvr_event_replaced(epg_broadcast_t *e, epg_broadcast_t *new_e)
 {
-  dvr_entry_t *de;
+  dvr_entry_t *de, *de_next;
   channel_t *ch = e->channel;
   epg_broadcast_t *e2;
   char ubuf[UUID_HEX_SIZE];
@@ -1594,7 +1691,8 @@ dvr_event_replaced(epg_broadcast_t *e, epg_broadcast_t *new_e)
   if (ch == NULL || e == new_e) return;
 
   /* Existing entry */
-  LIST_FOREACH(de, &ch->ch_dvrs, de_channel_link) {
+  for (de = LIST_FIRST(&ch->ch_dvrs); de; de = de_next) {
+    de_next = LIST_NEXT(de, de_channel_link);
 
     if (de->de_bcast != e)
       continue;
@@ -3156,6 +3254,7 @@ dvr_entry_delete(dvr_entry_t *de)
   time_t t;
   struct tm tm;
   const char *filename;
+  char *str1, *str2;
   char tbuf[64], ubuf[UUID_HEX_SIZE], *rdir, *postcmd;
   int r, ret = 0;
 
@@ -3164,13 +3263,15 @@ dvr_entry_delete(dvr_entry_t *de)
   if (strftime(tbuf, sizeof(tbuf), "%F %T", &tm) <= 0)
     *tbuf = 0;
 
+  str1 = dvr_entry_get_retention_string(de);
+  str2 = dvr_entry_get_removal_string(de);
   tvhlog(LOG_INFO, "dvr", "delete entry %s \"%s\" on \"%s\" start time %s, "
 	 "scheduled for recording by \"%s\", retention \"%s\" removal \"%s\"",
          idnode_uuid_as_str(&de->de_id, ubuf),
 	 lang_str_get(de->de_title, NULL), DVR_CH_NAME(de), tbuf,
-	 de->de_creator ?: "",
-	 dvr_entry_get_retention_string(de),
-	 dvr_entry_get_removal_string(de));
+	 de->de_creator ?: "", str1, str2);
+  free(str2);
+  free(str1);
 
   if(!htsmsg_is_empty(de->de_files)) {
 #if ENABLE_INOTIFY
