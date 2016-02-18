@@ -84,11 +84,12 @@ static const char *epggrab_mod_class_title(idnode_t *self, const char *lang)
   return prop_sbuf;
 }
 
-static void epggrab_mod_class_save(idnode_t *self)
+static void
+epggrab_mod_class_changed(idnode_t *self)
 {
   epggrab_module_t *mod = (epggrab_module_t *)self;
   epggrab_activate_module(mod, mod->enabled);
-  epggrab_save();
+  idnode_changed(&epggrab_conf.idnode);
 }
 
 static const void *epggrab_mod_class_type_get(void *o)
@@ -109,7 +110,7 @@ const idclass_t epggrab_mod_class = {
   .ic_event      = "epggrab_mod",
   .ic_perm_def   = ACCESS_ADMIN,
   .ic_get_title  = epggrab_mod_class_title,
-  .ic_save       = epggrab_mod_class_save,
+  .ic_changed    = epggrab_mod_class_changed,
   .ic_groups     = (const property_group_t[]) {
      {
         .name   = N_("Settings"),
@@ -122,6 +123,7 @@ const idclass_t epggrab_mod_class = {
       .type   = PT_STR,
       .id     = "name",
       .name   = N_("Name"),
+      .desc   = N_("The EPG grabber name."),
       .off    = offsetof(epggrab_module_t, name),
       .opts   = PO_RDONLY,
       .group  = 1,
@@ -130,6 +132,7 @@ const idclass_t epggrab_mod_class = {
       .type   = PT_STR,
       .id     = "type",
       .name   = N_("Type"),
+      .desc   = N_("The EPG grabber type."),
       .get    = epggrab_mod_class_type_get,
       .set    = epggrab_mod_class_type_set,
       .opts   = PO_RDONLY | PO_LOCALE,
@@ -139,6 +142,7 @@ const idclass_t epggrab_mod_class = {
       .type   = PT_BOOL,
       .id     = "enabled",
       .name   = N_("Enabled"),
+      .desc   = N_("Enable/disable the grabber."),
       .off    = offsetof(epggrab_module_t, enabled),
       .group  = 1,
     },
@@ -146,6 +150,10 @@ const idclass_t epggrab_mod_class = {
       .type   = PT_INT,
       .id     = "priority",
       .name   = N_("Priority"),
+      .desc   = N_("Grabber priority. This option lets you pick which "
+                   "EPG grabber`s data gets used first if more than one "
+                   "grabber is enabled. Priority is given to the grabber "
+                   "with the highest value set here."),
       .off    = offsetof(epggrab_module_t, priority),
       .opts   = PO_ADVANCED,
       .group  = 1
@@ -163,6 +171,7 @@ const idclass_t epggrab_class_mod_int = {
       .type   = PT_STR,
       .id     = "path",
       .name   = N_("Path"),
+      .desc   = N_("Path to the grabber executable."),
       .off    = offsetof(epggrab_module_int_t, path),
       .opts   = PO_RDONLY | PO_NOSAVE,
       .group  = 1
@@ -171,6 +180,7 @@ const idclass_t epggrab_class_mod_int = {
       .type   = PT_STR,
       .id     = "args",
       .name   = N_("Extra arguments"),
+      .desc   = N_("Additional arguments to pass to the grabber."),
       .off    = offsetof(epggrab_module_int_t, args),
       .opts   = PO_ADVANCED,
       .group  = 1
@@ -188,6 +198,7 @@ const idclass_t epggrab_class_mod_ext = {
       .type   = PT_STR,
       .id     = "path",
       .name   = N_("Path"),
+      .desc   = N_("Path to the socket Tvheadend will read data from."),
       .off    = offsetof(epggrab_module_ext_t, path),
       .opts   = PO_RDONLY | PO_NOSAVE,
       .group  = 1

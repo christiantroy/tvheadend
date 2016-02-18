@@ -1447,7 +1447,7 @@ dobackup(const char *oldver)
   }
 
   snprintf(outfile, sizeof(outfile), "%s/backup", root);
-  if (makedirs(outfile, 0700, -1, -1))
+  if (makedirs("config", outfile, 0700, 1, -1, -1))
     goto fatal;
   if (chdir(root)) {
     tvherror("config", "unable to find directory '%s'", root);
@@ -1572,7 +1572,7 @@ config_migrate ( int backup )
 update:
   config.version = v;
   tvh_str_set(&config.full_version, tvheadend_version);
-  config_save();
+  idnode_changed(&config.idnode);
   return 1;
 }
 
@@ -1631,11 +1631,11 @@ config_boot ( const char *path, gid_t gid, uid_t uid )
   memset(&config, 0, sizeof(config));
   config.idnode.in_class = &config_class;
   config.ui_quicktips = 1;
-  config.wizard = strdup("hello");
   config.info_area = strdup("login,storage,time");
   config.cookie_expires = 7;
   config.dscp = -1;
   config.descrambler_buffer = 9000;
+  config.epg_compress = 1;
 
   /* Generate default */
   if (!path) {
@@ -1651,7 +1651,7 @@ config_boot ( const char *path, gid_t gid, uid_t uid )
   /* Ensure directory exists */
   if (stat(path, &st)) {
     config_newcfg = 1;
-    if (makedirs(path, 0700, gid, uid)) {
+    if (makedirs("config", path, 0700, 1, gid, uid)) {
       tvhwarn("START", "failed to create settings directory %s,"
                        " settings will not be saved", path);
       return;
@@ -1682,6 +1682,7 @@ config_boot ( const char *path, gid_t gid, uid_t uid )
   config2 = hts_settings_load("config");
   if (!config2) {
     tvhlog(LOG_DEBUG, "config", "no configuration, loading defaults");
+    config.wizard = strdup("hello");
     config_newcfg = 1;
   } else {
     f = htsmsg_field_find(config2, "language");
@@ -1725,7 +1726,7 @@ config_init ( int backup )
     config.version = ARRAY_SIZE(config_migrate_table);
     tvh_str_set(&config.full_version, tvheadend_version);
     tvh_str_set(&config.server_name, "Tvheadend");
-    config_save();
+    idnode_changed(&config.idnode);
   
   /* Perform migrations */
   } else {
@@ -1751,24 +1752,20 @@ void config_done ( void )
   file_unlock(config_lock, config_lock_fd);
 }
 
-void config_save ( void )
+/* **************************************************************************
+ * Config Class
+ * *************************************************************************/
+
+static htsmsg_t *
+config_class_save(idnode_t *self, char *filename, size_t fsize)
 {
   htsmsg_t *c = htsmsg_create_map();
   idnode_save(&config.idnode, c);
 #if ENABLE_SATIP_SERVER
   idnode_save(&satip_server_conf.idnode, c);
 #endif
-  hts_settings_save(c, "config");
-  htsmsg_destroy(c);
-}
-
-/* **************************************************************************
- * Config Class
- * *************************************************************************/
-
-static void config_class_save(idnode_t *self)
-{
-  config_save();
+  snprintf(filename, fsize, "config");
+  return c;
 }
 
 static int
@@ -1915,6 +1912,27 @@ config_class_uilevel ( void *o, const char *lang )
   return strtab2htsmsg(tab, 1, lang);
 }
 
+static htsmsg_t *
+config_class_chiconscheme_list ( void *o, const char *lang )
+{
+  static const struct strtab tab[] = {
+    { N_("No scheme"),           CHICON_NONE },
+    { N_("All lower-case"),      CHICON_LOWERCASE },
+    { N_("Service name picons"), CHICON_SVCNAME },
+  };
+  return strtab2htsmsg(tab, 1, lang);
+}
+
+static htsmsg_t *
+config_class_piconscheme_list ( void *o, const char *lang )
+{
+  static const struct strtab tab[] = {
+    { N_("Standard"),                PICON_STANDARD },
+    { N_("Force service type to 1"), PICON_ISVCTYPE },
+  };
+  return strtab2htsmsg(tab, 1, lang);
+}
+
 const idclass_t config_class = {
   .ic_snode      = &config.idnode,
   .ic_class      = "config",
@@ -2050,12 +2068,20 @@ const idclass_t config_class = {
       .type   = PT_U32,
       .id     = "descrambler_buffer",
       .name   = N_("Descrambler buffer (TS packets)"),
-      .desc   = N_("The number of packets Tvheadend buffers in case "
+      .desc   = N_("The number of MPEG-TS packets Tvheadend buffers in case "
                    "there is a delay receiving CA keys. "),
-                   /* Note: I'm not sure I've explained this very well
-                    * ;)
-                    */
       .off    = offsetof(config_t, descrambler_buffer),
+      .opts   = PO_EXPERT,
+      .group  = 1
+    },
+    {
+      .type   = PT_BOOL,
+      .id     = "parser_backlog",
+      .name   = N_("Use packet backlog"),
+      .desc   = N_("Send previous stream frames to upper layers "
+                   "(before frame start is signalled in the stream). "
+                   "It may cause issues with some clients / players."),
+      .off    = offsetof(config_t, parser_backlog),
       .opts   = PO_EXPERT,
       .group  = 1
     },
@@ -2074,6 +2100,19 @@ const idclass_t config_class = {
       .opts   = PO_LORDER,
       .group  = 2
     },
+#if ENABLE_ZLIB
+    {
+      .type   = PT_BOOL,
+      .id     = "epg_compress",
+      .name   = N_("Compress EPG database"),
+      .desc   = N_("Compress the EPG database to reduce disk I/O "
+                   "and space."),
+      .off    = offsetof(config_t, epg_compress),
+      .opts   = PO_EXPERT,
+      .def.i  = 1,
+      .group  = 1
+    },
+#endif
     {
       .type   = PT_STR,
       .islist = 1,
@@ -2167,11 +2206,13 @@ const idclass_t config_class = {
       .group  = 6,
     },
     {
-      .type   = PT_BOOL,
-      .id     = "chiconlowercase",
-      .name   = N_("Channel icon name lower-case"),
-      .desc   = N_("Use icons with lower-case filenames only."),
-      .off    = offsetof(config_t, chicon_lowercase),
+      .type   = PT_INT,
+      .id     = "chiconscheme",
+      .name   = N_("Channel icon name scheme"),
+      .desc   = N_("Scheme to generate the the channel icon names "
+                   "(all lower-case, service name picons etc.)."),
+      .list   = config_class_chiconscheme_list,
+      .off    = offsetof(config_t, chicon_scheme),
       .opts   = PO_ADVANCED,
       .group  = 6,
     },
@@ -2183,6 +2224,17 @@ const idclass_t config_class = {
                    "collection. See Help for more detailed "
                    "information."),
       .off    = offsetof(config_t, picon_path),
+      .opts   = PO_ADVANCED,
+      .group  = 6,
+    },
+    {
+      .type   = PT_INT,
+      .id     = "piconscheme",
+      .name   = N_("Picon name scheme"),
+      .desc   = N_("Select scheme to generate the picon names "
+                   "(standard, force service type to 1)"),
+      .list   = config_class_piconscheme_list,
+      .off    = offsetof(config_t, picon_scheme),
       .opts   = PO_ADVANCED,
       .group  = 6,
     },

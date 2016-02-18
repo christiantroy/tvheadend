@@ -94,10 +94,10 @@ satip_frontend_signal_cb( void *aux )
  * *************************************************************************/
 
 static void
-satip_frontend_class_save ( idnode_t *in )
+satip_frontend_class_changed ( idnode_t *in )
 {
   satip_device_t *la = ((satip_frontend_t*)in)->sf_device;
-  satip_device_save(la);
+  satip_device_changed(la);
 }
 
 static int
@@ -138,7 +138,7 @@ const idclass_t satip_frontend_class =
   .ic_super      = &mpegts_input_class,
   .ic_class      = "satip_frontend",
   .ic_caption    = N_("SAT>IP DVB frontend"),
-  .ic_save       = satip_frontend_class_save,
+  .ic_changed    = satip_frontend_class_changed,
   .ic_properties = (const property_t[]) {
     {
       .type     = PT_INT,
@@ -985,7 +985,7 @@ done:
 
 static void
 satip_frontend_shutdown
-  ( satip_frontend_t *lfe, http_client_t *rtsp, tvhpoll_t *efd )
+  ( satip_frontend_t *lfe, const char *name, http_client_t *rtsp, tvhpoll_t *efd )
 {
   char b[32];
   tvhpoll_event_t ev;
@@ -995,6 +995,7 @@ satip_frontend_shutdown
     return;
 
   snprintf(b, sizeof(b), "/stream=%li", rtsp->hc_rtsp_stream_id);
+  tvhtrace("satip", "%s - shutdown for %s/%s", name, b, rtsp->hc_rtsp_session ?: "");
   r = rtsp_teardown(rtsp, (char *)b, NULL);
   if (r < 0) {
     tvhtrace("satip", "%s - bad teardown", b);
@@ -1038,7 +1039,7 @@ satip_frontend_tuning_error ( satip_frontend_t *lfe, satip_tune_req_t *tr )
 
 static void
 satip_frontend_close_rtsp
-  ( satip_frontend_t *lfe, tvhpoll_t *efd, http_client_t **rtsp )
+  ( satip_frontend_t *lfe, const char *name, tvhpoll_t *efd, http_client_t **rtsp )
 {
   tvhpoll_event_t ev;
 
@@ -1048,7 +1049,7 @@ satip_frontend_close_rtsp
   ev.data.ptr = NULL;
   tvhpoll_rem(efd, &ev, 1);
 
-  satip_frontend_shutdown(lfe, *rtsp, efd);
+  satip_frontend_shutdown(lfe, name, *rtsp, efd);
 
   memset(&ev, 0, sizeof(ev));
   ev.events   = TVHPOLL_IN;
@@ -1203,7 +1204,7 @@ new_tune:
   lfe_master = NULL;
 
   if (rtsp && !lfe->sf_device->sd_fast_switch)
-    satip_frontend_close_rtsp(lfe, efd, &rtsp);
+    satip_frontend_close_rtsp(lfe, buf, efd, &rtsp);
 
   if (rtsp)
     rtsp->hc_rtp_data_received = NULL;
@@ -1217,12 +1218,15 @@ new_tune:
   lfe->mi_display_name((mpegts_input_t*)lfe, buf, sizeof(buf));
   lfe->sf_display_name = buf;
 
+  u64_2 = getmonoclock();
+
   while (!start) {
 
     nfds = tvhpoll_wait(efd, ev, 1, rtsp ? 50 : -1);
 
     if (!tvheadend_running) { exit_flag = 1; goto done; }
-    if (rtsp && nfds == 0) satip_frontend_close_rtsp(lfe, efd, &rtsp);
+    if (rtsp && getmonoclock() - u64_2 > 50000) /* 50ms */
+      satip_frontend_close_rtsp(lfe, buf, efd, &rtsp);
     if (nfds <= 0) continue;
 
     if (ev[0].data.ptr == NULL) {
@@ -1710,7 +1714,7 @@ wrdata:
   tvhpoll_rem(efd, ev, nfds);
 
   if (exit_flag) {
-    satip_frontend_shutdown(lfe, rtsp, efd);
+    satip_frontend_shutdown(lfe, buf, rtsp, efd);
     http_client_close(rtsp);
     rtsp = NULL;
   }
@@ -1752,8 +1756,71 @@ done:
  * Creation/Config
  * *************************************************************************/
 
+static int
+satip_frontend_default_positions ( satip_frontend_t *lfe )
+{
+  satip_device_t *sd = lfe->sf_device;
+
+  if (!strcmp(sd->sd_info.modelname, "IPLNB"))
+    return 1;
+  return sd->sd_info.srcs;
+}
+
+static mpegts_network_t *
+satip_frontend_wizard_network ( satip_frontend_t *lfe )
+{
+  satip_satconf_t *sfc;
+
+  sfc = TAILQ_FIRST(&lfe->sf_satconf);
+  if (sfc && sfc->sfc_networks)
+    if (sfc->sfc_networks->is_count > 0)
+      return (mpegts_network_t *)sfc->sfc_networks->is_array[0];
+  return NULL;
+}
+
+static htsmsg_t *
+satip_frontend_wizard_get( tvh_input_t *ti, const char *lang )
+{
+  satip_frontend_t *lfe = (satip_frontend_t*)ti;
+  mpegts_network_t *mn;
+  const idclass_t *idc = NULL;
+
+  mn = satip_frontend_wizard_network(lfe);
+  if (lfe->sf_master == 0 && (mn == NULL || (mn && mn->mn_wizard)))
+    idc = dvb_network_class_by_fe_type(lfe->sf_type);
+  return mpegts_network_wizard_get((mpegts_input_t *)lfe, idc, mn, lang);
+}
+
 static void
-satip_frontend_hacks( satip_frontend_t *lfe, int *def_positions )
+satip_frontend_wizard_set( tvh_input_t *ti, htsmsg_t *conf, const char *lang )
+{
+  satip_frontend_t *lfe = (satip_frontend_t*)ti;
+  const char *ntype = htsmsg_get_str(conf, "mpegts_network_type");
+  mpegts_network_t *mn;
+  htsmsg_t *nlist;
+
+  mpegts_network_wizard_create(ntype, &nlist, lang);
+  mn = satip_frontend_wizard_network(lfe);
+  if (nlist && lfe->sf_master == 0 && (mn == NULL || mn->mn_wizard)) {
+    htsmsg_t *conf = htsmsg_create_map();
+    htsmsg_t *list = htsmsg_create_list();
+    htsmsg_t *pos  = htsmsg_create_map();
+    htsmsg_add_bool(pos, "enabled", 1);
+    htsmsg_add_msg(pos, "networks", nlist);
+    htsmsg_add_msg(list, NULL, pos);
+    htsmsg_add_msg(conf, "satconf", list);
+    satip_satconf_create(lfe, conf, satip_frontend_default_positions(lfe));
+    htsmsg_destroy(conf);
+    if (satip_frontend_wizard_network(lfe))
+      mpegts_input_set_enabled((mpegts_input_t *)lfe, 1);
+    satip_device_changed(lfe->sf_device);
+  } else {
+    htsmsg_destroy(nlist);
+  }
+}
+
+static void
+satip_frontend_hacks( satip_frontend_t *lfe )
 {
   satip_device_t *sd = lfe->sf_device;
 
@@ -1764,8 +1831,6 @@ satip_frontend_hacks( satip_frontend_t *lfe, int *def_positions )
       lfe->sf_play2 = 1;
     lfe->sf_tdelay = 250;
     lfe->sf_teardown_delay = 1;
-  } else if (!strcmp(sd->sd_info.modelname, "IPLNB")) {
-    *def_positions = 1;
   } else if (strstr(sd->sd_info.manufacturer, "AVM Berlin") &&
               strstr(sd->sd_info.modelname, "FRITZ!")) {
     lfe->sf_play2 = 1;
@@ -1781,7 +1846,7 @@ satip_frontend_create
   char id[16], lname[256], nname[60];
   satip_frontend_t *lfe;
   uint32_t master = 0;
-  int i, def_positions = sd->sd_info.srcs;
+  int i;
 
   /* Override type */
   snprintf(id, sizeof(id), "override #%d", num);
@@ -1838,7 +1903,7 @@ satip_frontend_create
   lfe->sf_master   = master;
   lfe->sf_type_override = override ? strdup(override) : NULL;
   lfe->sf_pass_weight = 1;
-  satip_frontend_hacks(lfe, &def_positions);
+  satip_frontend_hacks(lfe);
   TAILQ_INIT(&lfe->sf_satconf);
   pthread_mutex_init(&lfe->sf_dvr_lock, NULL);
   lfe = (satip_frontend_t*)mpegts_input_create0((mpegts_input_t*)lfe, idc, uuid, conf);
@@ -1865,6 +1930,8 @@ satip_frontend_create
   }
 
   /* Input callbacks */
+  lfe->ti_wizard_get     = satip_frontend_wizard_get;
+  lfe->ti_wizard_set     = satip_frontend_wizard_set;
   lfe->mi_is_enabled     = satip_frontend_is_enabled;
   lfe->mi_start_mux      = satip_frontend_start_mux;
   lfe->mi_stop_mux       = satip_frontend_stop_mux;
@@ -1879,7 +1946,7 @@ satip_frontend_create
 
   /* Create satconf */
   if (lfe->sf_type == DVB_TYPE_S && master == 0)
-    satip_satconf_create(lfe, conf, def_positions);
+    satip_satconf_create(lfe, conf, satip_frontend_default_positions(lfe));
 
   /* Slave networks update */
   if (master) {

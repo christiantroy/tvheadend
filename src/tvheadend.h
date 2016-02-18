@@ -132,6 +132,19 @@ typedef enum {
 #define UILEVEL_EXPERT   2
 
 /*
+ *
+ */
+#define CHICON_NONE      0
+#define CHICON_LOWERCASE 1
+#define CHICON_SVCNAME   2
+
+/*
+ *
+ */
+#define PICON_STANDARD   0
+#define PICON_ISVCTYPE   1
+
+/*
  * global timer
  */
 
@@ -469,6 +482,7 @@ typedef enum {
 #define SM_CODE_USER_ACCESS               105
 #define SM_CODE_USER_LIMIT                106
 #define SM_CODE_WEAK_STREAM               107
+#define SM_CODE_USER_REQUEST              108
 
 #define SM_CODE_NO_FREE_ADAPTER           200
 #define SM_CODE_MUX_NOT_ENABLED           201
@@ -671,6 +685,8 @@ int tvhthread_create
    void *(*start_routine) (void *), void *arg,
    const char *name);
 
+int tvhtread_renice(int value);
+
 int tvh_open(const char *pathname, int flags, mode_t mode);
 
 int tvh_socket(int domain, int type, int protocol);
@@ -768,7 +784,7 @@ static inline uint8_t *sbuf_peek(sbuf_t *sb, int off) { return sb->sb_data + off
 
 char *md5sum ( const char *str );
 
-int makedirs ( const char *path, int mode, gid_t gid, uid_t uid );
+int makedirs ( const char *subsys, const char *path, int mode, int mstrict, gid_t gid, uid_t uid );
 
 int rmtree ( const char *path );
 
@@ -777,6 +793,8 @@ char *regexp_escape ( const char *str );
 #if ENABLE_ZLIB
 uint8_t *tvh_gzip_inflate ( const uint8_t *data, size_t size, size_t orig );
 uint8_t *tvh_gzip_deflate ( const uint8_t *data, size_t orig, size_t *size );
+int      tvh_gzip_deflate_fd ( int fd, const uint8_t *data, size_t orig, size_t *size, int speed );
+int      tvh_gzip_deflate_fd_header ( int fd, const uint8_t *data, size_t orig, int speed );
 #endif
 
 /* URL decoding */

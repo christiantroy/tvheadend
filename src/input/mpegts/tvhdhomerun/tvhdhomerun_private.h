@@ -24,7 +24,7 @@
 #include "htsbuf.h"
 #include "tvhdhomerun.h"
 
-#include <libhdhomerun/hdhomerun.h>
+#include "libhdhomerun/hdhomerun.h"
 
 typedef struct tvhdhomerun_device_info tvhdhomerun_device_info_t;
 typedef struct tvhdhomerun_device      tvhdhomerun_device_t;
@@ -134,7 +134,9 @@ tvhdhomerun_frontend_create( tvhdhomerun_device_t *hd, struct hdhomerun_discover
 
 void tvhdhomerun_frontend_delete ( tvhdhomerun_frontend_t *lfe );
 
-void tvhdhomerun_device_save ( tvhdhomerun_device_t *sd );
+static inline void tvhdhomerun_device_changed ( tvhdhomerun_device_t *sd )
+  { idnode_changed(&sd->th_id); }
+
 void tvhdhomerun_frontend_save ( tvhdhomerun_frontend_t *lfe, htsmsg_t *m );
 
 #endif

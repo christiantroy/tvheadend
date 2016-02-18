@@ -59,7 +59,7 @@ service_mapper_status ( void )
 /*
  * Start a new mapping
  */
-static void
+void
 service_mapper_start ( const service_mapper_conf_t *conf, htsmsg_t *uuids )
 {
   int e, tr, qd = 0;
@@ -268,8 +268,7 @@ service_mapper_process
     }
 
     /* save */
-    idnode_notify_changed(&chn->ch_id);
-    channel_save(chn);
+    idnode_changed(&chn->ch_id);
   }
   if (!bq) {
     service_mapper_stat.ok++;
@@ -421,19 +420,21 @@ service_mapper_reset_stats (void)
 /*
  * Save settings
  */
-static void service_mapper_conf_class_save ( idnode_t *self )
+static htsmsg_t *
+service_mapper_conf_class_save ( idnode_t *self, char *filename, size_t fsize )
 {
   htsmsg_t *m;
 
   m = htsmsg_create_map();
   idnode_save(&service_mapper_conf.idnode, m);
-  hts_settings_save(m, "service_mapper/config");
-  htsmsg_destroy(m);
+  snprintf(filename, fsize, "service_mapper/config");
 
   if (!htsmsg_is_empty(service_mapper_conf.services))
     service_mapper_start(&service_mapper_conf.d, service_mapper_conf.services);
   htsmsg_destroy(service_mapper_conf.services);
   service_mapper_conf.services = NULL;
+
+  return m;
 }
 
 /*
@@ -487,6 +488,7 @@ static const idclass_t service_mapper_conf_class = {
       .islist = 1,
       .id     = "services",
       .name   = N_("Services"),
+      .desc   = N_("Select services to map."),
       .get    = service_mapper_services_get,
       .set    = service_mapper_services_set,
       .list   = service_mapper_services_enum,
@@ -496,6 +498,8 @@ static const idclass_t service_mapper_conf_class = {
       .type   = PT_BOOL,
       .id     = "check_availability",
       .name   = N_("Check availability"),
+      .desc   = N_("Check service availability (add live services "
+                   "only)."),
       .off    = offsetof(service_mapper_t, d.check_availability),
       .opts   = PO_ADVANCED
     },
@@ -503,19 +507,22 @@ static const idclass_t service_mapper_conf_class = {
       .type   = PT_BOOL,
       .id     = "encrypted",
       .name   = N_("Map encrypted services"),
+      .desc   = N_("Ignore encryption flag, include encrypted services "
+                   "anyway."),
       .off    = offsetof(service_mapper_t, d.encrypted),
     },
     {
       .type   = PT_BOOL,
       .id     = "merge_same_name",
       .name   = N_("Merge same name"),
+      .desc   = N_("Merge services with the same name to one channel."),
       .off    = offsetof(service_mapper_t, d.merge_same_name),
     },
     {
       .type   = PT_BOOL,
       .id     = "type_tags",
       .name   = N_("Create type based tags"),
-      .desc   = N_("Create SDTV/HDTV/Radio tags"),
+      .desc   = N_("Create SDTV/HDTV/Radio tags."),
       .off    = offsetof(service_mapper_t, d.type_tags),
       .opts   = PO_ADVANCED
     },
@@ -523,6 +530,7 @@ static const idclass_t service_mapper_conf_class = {
       .type   = PT_BOOL,
       .id     = "provider_tags",
       .name   = N_("Create provider name tags"),
+      .desc   = N_("Create a provider name tag."),
       .off    = offsetof(service_mapper_t, d.provider_tags),
       .opts   = PO_ADVANCED
     },
@@ -530,6 +538,7 @@ static const idclass_t service_mapper_conf_class = {
       .type   = PT_BOOL,
       .id     = "network_tags",
       .name   = N_("Create network name tags"),
+      .desc   = N_("Create network name tags (set by provider)."),
       .off    = offsetof(service_mapper_t, d.network_tags),
       .opts   = PO_ADVANCED
     },

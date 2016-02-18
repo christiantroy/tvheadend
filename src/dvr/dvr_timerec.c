@@ -77,7 +77,7 @@ dvr_timerec_purge_spawn(dvr_timerec_entry_t *dte, int delconf)
       if (de->de_sched_state == DVR_SCHEDULED)
         dvr_entry_cancel(de, 0);
       else
-        dvr_entry_save(de);
+        idnode_changed(&de->de_id);
     }
   }
 }
@@ -209,10 +209,8 @@ dvr_timerec_create_htsp(htsmsg_t *conf)
   dte = dvr_timerec_create(NULL, conf);
   htsmsg_destroy(conf);
 
-  if (dte) {
-    dvr_timerec_save(dte);
-    dvr_timerec_check(dte);
-  }
+  if (dte)
+    idnode_changed(&dte->dte_id);
 
   return dte;
 }
@@ -221,9 +219,7 @@ void
 dvr_timerec_update_htsp (dvr_timerec_entry_t *dte, htsmsg_t *conf)
 {
   idnode_update(&dte->dte_id, conf);
-  dvr_timerec_save(dte);
-  dvr_timerec_check(dte);
-  htsp_timerec_entry_update(dte);
+  idnode_changed(&dte->dte_id);
   tvhlog(LOG_INFO, "timerec", "\"%s\" on \"%s\": Updated", dte->dte_title ? dte->dte_title : "",
       (dte->dte_channel && dte->dte_channel->ch_name) ? dte->dte_channel->ch_name : "any channel");
 }
@@ -235,6 +231,8 @@ static void
 timerec_entry_destroy(dvr_timerec_entry_t *dte, int delconf)
 {
   char ubuf[UUID_HEX_SIZE];
+
+  idnode_save_check(&dte->dte_id, delconf);
 
   dvr_timerec_purge_spawn(dte, delconf);
 
@@ -262,33 +260,27 @@ timerec_entry_destroy(dvr_timerec_entry_t *dte, int delconf)
   free(dte);
 }
 
-/**
- *
- */
-void
-dvr_timerec_save(dvr_timerec_entry_t *dte)
-{
-  htsmsg_t *m = htsmsg_create_map();
-  char ubuf[UUID_HEX_SIZE];
-
-  lock_assert(&global_lock);
-
-  idnode_save(&dte->dte_id, m);
-  hts_settings_save(m, "dvr/timerec/%s", idnode_uuid_as_str(&dte->dte_id, ubuf));
-  htsmsg_destroy(m);
-}
-
 /* **************************************************************************
  * DVR Autorec Entry Class definition
  * **************************************************************************/
 
 static void
-dvr_timerec_entry_class_save(idnode_t *self)
+dvr_timerec_entry_class_changed(idnode_t *self)
 {
   dvr_timerec_entry_t *dte = (dvr_timerec_entry_t *)self;
-  dvr_timerec_save(dte);
   dvr_timerec_check(dte);
   htsp_timerec_entry_update(dte);
+}
+
+static htsmsg_t *
+dvr_timerec_entry_class_save(idnode_t *self, char *filename, size_t fsize)
+{
+  dvr_timerec_entry_t *dte = (dvr_timerec_entry_t *)self;
+  htsmsg_t *m = htsmsg_create_map();
+  char ubuf[UUID_HEX_SIZE];
+  idnode_save(&dte->dte_id, m);
+  snprintf(filename, fsize, "dvr/timerec/%s", idnode_uuid_as_str(&dte->dte_id, ubuf));
+  return m;
 }
 
 static void
@@ -527,6 +519,7 @@ const idclass_t dvr_timerec_entry_class = {
   .ic_class      = "dvrtimerec",
   .ic_caption    = N_("DVR time record entry"),
   .ic_event      = "dvrtimerec",
+  .ic_changed    = dvr_timerec_entry_class_changed,
   .ic_save       = dvr_timerec_entry_class_save,
   .ic_get_title  = dvr_timerec_entry_class_get_title,
   .ic_delete     = dvr_timerec_entry_class_delete,
@@ -536,18 +529,21 @@ const idclass_t dvr_timerec_entry_class = {
       .type     = PT_BOOL,
       .id       = "enabled",
       .name     = N_("Enabled"),
+      .desc     = N_("Enable/disable the entry."),
       .off      = offsetof(dvr_timerec_entry_t, dte_enabled),
     },
     {
       .type     = PT_STR,
       .id       = "name",
       .name     = N_("Name"),
+      .desc     = N_("Name of the entry."),
       .off      = offsetof(dvr_timerec_entry_t, dte_name),
     },
     {
       .type     = PT_STR,
       .id       = "title",
       .name     = N_("Title"),
+      .desc     = N_("Title of the recording."),
       .off      = offsetof(dvr_timerec_entry_t, dte_title),
       .def.s    = "Time-%F_%R",
     },
@@ -555,6 +551,10 @@ const idclass_t dvr_timerec_entry_class = {
       .type     = PT_STR,
       .id       = "directory",
       .name     = N_("Directory"),
+      .desc     = N_("Directory override. Override the subdirectory "
+                     "rules specified by the DVR configuration and put "
+                     "all recordings done by this entry into the "
+                     "specified subdirectory"),
       .off      = offsetof(dvr_timerec_entry_t, dte_directory),
       .opts     = PO_EXPERT
     },
@@ -562,6 +562,7 @@ const idclass_t dvr_timerec_entry_class = {
       .type     = PT_STR,
       .id       = "channel",
       .name     = N_("Channel"),
+      .desc     = N_("Channel to use/used for the recording."),
       .set      = dvr_timerec_entry_class_channel_set,
       .get      = dvr_timerec_entry_class_channel_get,
       .rend     = dvr_timerec_entry_class_channel_rend,
@@ -571,6 +572,7 @@ const idclass_t dvr_timerec_entry_class = {
       .type     = PT_STR,
       .id       = "start",
       .name     = N_("Start"),
+      .desc     = N_("Time to start the recording/time the recording started."),
       .set      = dvr_timerec_entry_class_start_set,
       .get      = dvr_timerec_entry_class_start_get,
       .list     = dvr_timerec_entry_class_time_list,
@@ -581,6 +583,7 @@ const idclass_t dvr_timerec_entry_class = {
       .type     = PT_STR,
       .id       = "stop",
       .name     = N_("Stop"),
+      .desc     = N_("Time to stop recording/time the recording stopped."),
       .set      = dvr_timerec_entry_class_stop_set,
       .get      = dvr_timerec_entry_class_stop_get,
       .list     = dvr_timerec_entry_class_time_list,
@@ -592,6 +595,7 @@ const idclass_t dvr_timerec_entry_class = {
       .islist   = 1,
       .id       = "weekdays",
       .name     = N_("Days of Week"),
+      .desc     = N_("Record on these days only."),
       .set      = dvr_timerec_entry_class_weekdays_set,
       .get      = dvr_timerec_entry_class_weekdays_get,
       .list     = dvr_autorec_entry_class_weekdays_list,
@@ -602,6 +606,7 @@ const idclass_t dvr_timerec_entry_class = {
       .type     = PT_U32,
       .id       = "pri",
       .name     = N_("Priority"),
+      .desc     = N_("Priority of the entry."),
       .list     = dvr_entry_class_pri_list,
       .def.i    = DVR_PRIO_NORMAL,
       .off      = offsetof(dvr_timerec_entry_t, dte_pri),
@@ -611,6 +616,7 @@ const idclass_t dvr_timerec_entry_class = {
       .type     = PT_U32,
       .id       = "retention",
       .name     = N_("DVR log retention"),
+      .desc     = N_("Number of days to retain entry information."),
       .def.i    = DVR_RET_DVRCONFIG,
       .off      = offsetof(dvr_timerec_entry_t, dte_retention),
       .list     = dvr_entry_class_retention_list,
@@ -620,6 +626,7 @@ const idclass_t dvr_timerec_entry_class = {
       .type     = PT_U32,
       .id       = "removal",
       .name     = N_("DVR file retention period"),
+      .desc     = N_("Number of days to keep the recorded file."),
       .def.i    = DVR_RET_DVRCONFIG,
       .off      = offsetof(dvr_timerec_entry_t, dte_removal),
       .list     = dvr_entry_class_removal_list,
@@ -629,6 +636,7 @@ const idclass_t dvr_timerec_entry_class = {
       .type     = PT_STR,
       .id       = "config_name",
       .name     = N_("DVR configuration"),
+      .desc     = N_("DVR profile to use/used for the recording."),
       .set      = dvr_timerec_entry_class_config_name_set,
       .get      = dvr_timerec_entry_class_config_name_get,
       .rend     = dvr_timerec_entry_class_config_name_rend,
@@ -639,6 +647,7 @@ const idclass_t dvr_timerec_entry_class = {
       .type     = PT_STR,
       .id       = "owner",
       .name     = N_("Owner"),
+      .desc     = N_("Owner of the entry."),
       .off      = offsetof(dvr_timerec_entry_t, dte_owner),
       .get_opts = dvr_timerec_entry_class_owner_opts,
     },
@@ -646,6 +655,9 @@ const idclass_t dvr_timerec_entry_class = {
       .type     = PT_STR,
       .id       = "creator",
       .name     = N_("Creator"),
+      .desc     = N_("The user who created the recording, or the "
+                     "auto-recording source and IP address if scheduled "
+                     "by a matching rule."),
       .off      = offsetof(dvr_timerec_entry_t, dte_creator),
       .get_opts = dvr_timerec_entry_class_owner_opts,
     },
@@ -653,6 +665,7 @@ const idclass_t dvr_timerec_entry_class = {
       .type     = PT_STR,
       .id       = "comment",
       .name     = N_("Comment"),
+      .desc     = N_("Free-form text field, enter whatever you like here."),
       .off      = offsetof(dvr_timerec_entry_t, dte_comment),
     },
     {}
@@ -755,7 +768,7 @@ timerec_destroy_by_config(dvr_config_t *kcfg, int delconf)
       LIST_INSERT_HEAD(&cfg->dvr_timerec_entries, dte, dte_config_link);
     dte->dte_config = cfg;
     if (delconf)
-      dvr_timerec_save(dte);
+      idnode_changed(&dte->dte_id);
   }
 }
 

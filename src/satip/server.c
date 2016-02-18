@@ -112,7 +112,6 @@ satip_server_http_xml(http_connection_t *hc)
   char *devicelist = NULL;
   htsbuf_queue_t q;
   mpegts_network_t *mn;
-  mpegts_mux_t *mm;
   int dvbt = 0, dvbs = 0, dvbc = 0, atsc = 0;
   int srcs = 0, delim = 0, tuners = 0, i;
   struct xml_type_xtab *p;
@@ -147,13 +146,16 @@ satip_server_http_xml(http_connection_t *hc)
       dvbc++;
     else if (idnode_is_instance(&mn->mn_id, &dvb_network_atsc_t_class))
       atsc++;
+#if ENABLE_IPTV
     else if (idnode_is_instance(&mn->mn_id, &iptv_network_class)) {
+      mpegts_mux_t *mm;
       LIST_FOREACH(mm, &mn->mn_muxes, mm_network_link)
         if (((iptv_mux_t *)mm)->mm_iptv_satip_dvbt_freq) {
           dvbt++;
           break;
         }
     }
+#endif
   }
   for (p = xtab; p->id; p++) {
     i = *p->cptr;
@@ -548,9 +550,9 @@ struct satip_server_conf satip_server_conf = {
   .satip_allow_remote_weight = 1
 };
 
-static void satip_server_class_save(idnode_t *self)
+static void satip_server_class_changed(idnode_t *self)
 {
-  config_save();
+  idnode_changed(&config.idnode);
   satip_server_save();
 }
 
@@ -570,7 +572,7 @@ const idclass_t satip_server_class = {
   .ic_caption    = N_("SAT>IP server"),
   .ic_event      = "satip_server",
   .ic_perm_def   = ACCESS_ADMIN,
-  .ic_save       = satip_server_class_save,
+  .ic_changed    = satip_server_class_changed,
   .ic_groups     = (const property_group_t[]) {
       {
          .name   = N_("General"),
@@ -743,7 +745,6 @@ static void satip_server_save(void)
   int descramble, rewrite_pmt, muxcnf;
   char *nat_ip;
 
-  config_save();
   if (!satip_server_rtsp_port_locked) {
     satips_rtsp_port(0);
     if (satip_server_rtsp_port > 0) {
@@ -847,7 +848,7 @@ void satip_server_register(void)
   }
 
   if (save)
-    config_save();
+    idnode_changed(&config.idnode);
 
   satips_upnp_discovery = upnp_service_create(upnp_service);
   if (satips_upnp_discovery == NULL) {

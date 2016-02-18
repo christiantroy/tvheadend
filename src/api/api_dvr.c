@@ -57,7 +57,7 @@ api_dvr_config_create
 
   pthread_mutex_lock(&global_lock);
   if ((cfg = dvr_config_create(NULL, NULL, conf)))
-    dvr_config_save(cfg);
+    idnode_changed(&cfg->dvr_id);
   pthread_mutex_unlock(&global_lock);
 
   return 0;
@@ -172,7 +172,7 @@ api_dvr_entry_create
       htsmsg_add_msg(conf, "subtitle", m);
     }
     if ((de = dvr_entry_create(NULL, conf, 0)))
-      dvr_entry_save(de);
+      idnode_changed(&de->de_id);
 
     res = 0;
     free(lang);
@@ -244,7 +244,7 @@ api_dvr_entry_create_by_event
                                        NULL, DVR_PRIO_NORMAL, DVR_RET_DVRCONFIG,
                                        DVR_RET_DVRCONFIG, comment);
         if (de)
-          dvr_entry_save(de);
+          idnode_changed(&de->de_id);
       }
     }
     pthread_mutex_unlock(&global_lock);
@@ -322,6 +322,32 @@ api_dvr_entry_cancel
 }
 
 static void
+api_dvr_move_finished(access_t *perm, idnode_t *self)
+{
+  dvr_entry_move((dvr_entry_t *)self, 0);
+}
+
+static int
+api_dvr_entry_move_finished
+  ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
+{
+  return api_idnode_handler(perm, args, resp, api_dvr_move_finished, "move finished");
+}
+
+static void
+api_dvr_move_failed(access_t *perm, idnode_t *self)
+{
+  dvr_entry_move((dvr_entry_t *)self, 1);
+}
+
+static int
+api_dvr_entry_move_failed
+  ( access_t *perm, void *opaque, const char *op, htsmsg_t *args, htsmsg_t **resp )
+{
+  return api_idnode_handler(perm, args, resp, api_dvr_move_failed, "move failed");
+}
+
+static void
 api_dvr_autorec_grid
   ( access_t *perm, idnode_set_t *ins, api_idnode_grid_conf_t *conf, htsmsg_t *args )
 {
@@ -356,10 +382,8 @@ api_dvr_autorec_create
   if (cfg) {
     htsmsg_set_str(conf, "config_name", idnode_uuid_as_str(&cfg->dvr_id, ubuf));
     dae = dvr_autorec_create(NULL, conf);
-    if (dae) {
-      dvr_autorec_save(dae);
-      dvr_autorec_changed(dae, 1);
-    }
+    if (dae)
+      idnode_changed(&dae->dae_id);
   }
   pthread_mutex_unlock(&global_lock);
 
@@ -401,10 +425,8 @@ api_dvr_autorec_create_by_series
                                           perm->aa_username,
                                           perm->aa_representative,
                                           "Created from EPG query");
-        if (dae) {
-          dvr_autorec_save(dae);
-          dvr_autorec_changed(dae, 1);
-        }
+        if (dae)
+          idnode_changed(&dae->dae_id);
       }
     }
     pthread_mutex_unlock(&global_lock);
@@ -441,10 +463,8 @@ api_dvr_timerec_create
 
   pthread_mutex_lock(&global_lock);
   dte = dvr_timerec_create(NULL, conf);
-  if (dte) {
-    dvr_timerec_save(dte);
-    dvr_timerec_check(dte);
-  }
+  if (dte)
+    idnode_changed(&dte->dte_id);
   pthread_mutex_unlock(&global_lock);
 
   return 0;
@@ -471,6 +491,8 @@ void api_dvr_init ( void )
     { "dvr/entry/rerecord/allow",  ACCESS_RECORDER, api_dvr_entry_rerecord_allow, NULL },
     { "dvr/entry/stop",            ACCESS_RECORDER, api_dvr_entry_stop, NULL },
     { "dvr/entry/cancel",          ACCESS_RECORDER, api_dvr_entry_cancel, NULL },
+    { "dvr/entry/move/finished",   ACCESS_RECORDER, api_dvr_entry_move_finished, NULL },
+    { "dvr/entry/move/failed",     ACCESS_RECORDER, api_dvr_entry_move_failed, NULL },
 
     { "dvr/autorec/class",         ACCESS_RECORDER, api_idnode_class, (void*)&dvr_autorec_entry_class },
     { "dvr/autorec/grid",          ACCESS_RECORDER, api_idnode_grid,  api_dvr_autorec_grid },

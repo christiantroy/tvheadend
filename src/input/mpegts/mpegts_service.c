@@ -269,20 +269,12 @@ mpegts_service_is_enabled(service_t *t, int flags)
 /*
  * Save
  */
-static void
-mpegts_service_config_save ( service_t *t )
+static htsmsg_t *
+mpegts_service_config_save ( service_t *t, char *filename, size_t fsize )
 {
-  htsmsg_t *c = htsmsg_create_map();
   mpegts_service_t *s = (mpegts_service_t*)t;
-  char ubuf0[UUID_HEX_SIZE];
-  char ubuf1[UUID_HEX_SIZE];
-  char ubuf2[UUID_HEX_SIZE];
-  service_save(t, c);
-  hts_settings_save(c, "input/dvb/networks/%s/muxes/%s/services/%s",
-                    idnode_uuid_as_str(&s->s_dvb_mux->mm_network->mn_id, ubuf0),
-                    idnode_uuid_as_str(&s->s_dvb_mux->mm_id, ubuf1),
-                    idnode_uuid_as_str(&s->s_id, ubuf2));
-  htsmsg_destroy(c);
+  idnode_changed(&s->s_dvb_mux->mm_id);
+  return NULL;
 }
 
 /*
@@ -434,16 +426,7 @@ mpegts_service_setsourceinfo(service_t *t, source_info_t *si)
 
   if(m->mm_network->mn_network_name != NULL)
     si->si_network = strdup(m->mm_network->mn_network_name);
-#if ENABLE_MPEGTS_DVB
-  dvb_fe_type_t ftype;
-  ftype = dvb_fe_type_by_network_class(m->mm_network->mn_id.in_class);
-  if (ftype == DVB_TYPE_NONE)
-    strcpy(buf, "IPTV");
-  else
-    snprintf(buf, sizeof(buf), "%s", dvb_type2str(ftype));
-#else
-  strcpy(buf, "IPTV");
-#endif
+  mpegts_network_get_type_str(m->mm_network, buf, sizeof(buf));
   si->si_network_type = strdup(buf);
 
   m->mm_display_name(m, buf, sizeof(buf));
@@ -579,7 +562,7 @@ mpegts_service_channel_icon ( service_t *s )
 
     snprintf(prop_sbuf, PROP_SBUF_LEN,
              "picon://1_0_%X_%X_%X_%X_%X_0_0_0.png",
-             ms->s_dvb_servicetype,
+             config.picon_scheme == PICON_ISVCTYPE ? 1 : ms->s_dvb_servicetype,
              ms->s_dvb_service_id,
              ms->s_dvb_mux->mm_tsid,
              ms->s_dvb_mux->mm_onid,
@@ -679,18 +662,10 @@ mpegts_service_unref ( service_t *t )
 void
 mpegts_service_delete ( service_t *t, int delconf )
 {
-  mpegts_service_t *ms = (mpegts_service_t*)t;
+  mpegts_service_t *ms = (mpegts_service_t*)t, *mms;
   mpegts_mux_t     *mm = ms->s_dvb_mux;
-  char ubuf0[UUID_HEX_SIZE];
-  char ubuf1[UUID_HEX_SIZE];
-  char ubuf2[UUID_HEX_SIZE];
 
-  /* Remove config */
-  if (delconf && t->s_type == STYPE_STD)
-    hts_settings_remove("input/dvb/networks/%s/muxes/%s/services/%s",
-                      idnode_uuid_as_str(&mm->mm_network->mn_id, ubuf0),
-                      idnode_uuid_as_str(&mm->mm_id, ubuf1),
-                      idnode_uuid_as_str(&t->s_id, ubuf2));
+  idnode_changed(&mm->mm_id);
 
   /* Free memory */
   if (t->s_type == STYPE_STD)
@@ -698,8 +673,11 @@ mpegts_service_delete ( service_t *t, int delconf )
   sbuf_free(&ms->s_tsbuf);
 
   /* Remove master/slave linking */
-  LIST_SAFE_REMOVE(ms, s_masters_link);
-  LIST_SAFE_REMOVE(ms, s_slaves_link);
+  while (ms->s_masters.is_count > 0) {
+    mms = (mpegts_service_t *)ms->s_masters.is_array[0];
+    mms->s_unlink(mms, ms);
+  }
+  idnode_set_clear(&ms->s_masters);
 
   /* Remove PID lists */
   mpegts_pid_destroy(&ms->s_pids);
@@ -901,12 +879,12 @@ mpegts_service_raw_update_pids(mpegts_service_t *t, mpegts_apids_t *pids)
       mpegts_input_close_pids(mi, mm, t, 1);
       for (i = 0; i < x->count; i++) {
         pi = &x->pids[i];
-        mpegts_input_open_pid(mi, mm, pi->pid, MPS_RAW, pi->weight, t);
+        mpegts_input_open_pid(mi, mm, pi->pid, MPS_RAW, pi->weight, t, 0);
       }
     } else {
       if (pids->all) {
         mpegts_input_close_pids(mi, mm, t, 1);
-        mpegts_input_open_pid(mi, mm, MPEGTS_FULLMUX_PID, MPS_RAW, MPS_WEIGHT_RAW, t);
+        mpegts_input_open_pid(mi, mm, MPEGTS_FULLMUX_PID, MPS_RAW, MPS_WEIGHT_RAW, t, 0);
       } else {
         mpegts_pid_compare(p, x, &add, &del);
         for (i = 0; i < del.count; i++) {
@@ -915,7 +893,7 @@ mpegts_service_raw_update_pids(mpegts_service_t *t, mpegts_apids_t *pids)
         }
         for (i = 0; i < add.count; i++) {
           pi = &add.pids[i];
-          mpegts_input_open_pid(mi, mm, pi->pid, MPS_RAW, pi->weight, t);
+          mpegts_input_open_pid(mi, mm, pi->pid, MPS_RAW, pi->weight, t, 0);
         }
         mpegts_pid_done(&add);
         mpegts_pid_done(&del);
@@ -943,6 +921,7 @@ mpegts_service_update_slave_pids ( mpegts_service_t *s, int del )
   mpegts_service_t *s2;
   mpegts_apids_t *pids;
   elementary_stream_t *st;
+  int i;
 
   lock_assert(&s->s_stream_mutex);
 
@@ -957,7 +936,8 @@ mpegts_service_update_slave_pids ( mpegts_service_t *s, int del )
         st->es_pid >= 0 && st->es_pid < 8192)
       mpegts_pid_add(pids, st->es_pid, mpegts_mps_weight(st));
 
-  LIST_FOREACH(s2, &s->s_masters, s_masters_link) {
+  for (i = 0; i < s->s_masters.is_count; i++) {
+    s2 = (mpegts_service_t *)s->s_masters.is_array[i];
     pthread_mutex_lock(&s2->s_stream_mutex);
     if (!del)
       mpegts_pid_add_group(s2->s_slaves_pids, pids);
@@ -974,7 +954,10 @@ mpegts_service_link ( mpegts_service_t *master, mpegts_service_t *slave )
 {
   pthread_mutex_lock(&slave->s_stream_mutex);
   pthread_mutex_lock(&master->s_stream_mutex);
-  LIST_INSERT_HEAD(&slave->s_masters, master, s_masters_link);
+  assert(!idnode_set_exists(&slave->s_masters, &master->s_id));
+  assert(LIST_SAFE_ENTRY(slave, s_slaves_link));
+  idnode_set_alloc(&slave->s_masters, 16);
+  idnode_set_add(&slave->s_masters, &master->s_id, NULL, NULL);
   LIST_INSERT_HEAD(&master->s_slaves, slave, s_slaves_link);
   pthread_mutex_unlock(&master->s_stream_mutex);
   mpegts_service_update_slave_pids(slave, 0);
@@ -988,7 +971,9 @@ mpegts_service_unlink ( mpegts_service_t *master, mpegts_service_t *slave )
   pthread_mutex_lock(&slave->s_stream_mutex);
   mpegts_service_update_slave_pids(slave, 1);
   pthread_mutex_lock(&master->s_stream_mutex);
-  LIST_SAFE_REMOVE(master, s_masters_link);
+  idnode_set_remove(&slave->s_masters, &master->s_id);
+  if (slave->s_masters.is_count == 0)
+    idnode_set_clear(&slave->s_masters);
   LIST_SAFE_REMOVE(slave, s_slaves_link);
   pthread_mutex_unlock(&master->s_stream_mutex);
   pthread_mutex_unlock(&slave->s_stream_mutex);

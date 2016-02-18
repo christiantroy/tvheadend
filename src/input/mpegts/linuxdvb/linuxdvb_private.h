@@ -356,7 +356,8 @@ void linuxdvb_adapter_init ( void );
 
 void linuxdvb_adapter_done ( void );
 
-void linuxdvb_adapter_save ( linuxdvb_adapter_t *la );
+static inline void linuxdvb_adapter_changed ( linuxdvb_adapter_t *la )
+  { idnode_changed(&la->th_id); }
 
 int  linuxdvb_adapter_current_weight ( linuxdvb_adapter_t *la );
 
@@ -451,8 +452,7 @@ void linuxdvb_satconf_ele_destroy ( linuxdvb_satconf_ele_t *ls );
 htsmsg_t *linuxdvb_satconf_type_list ( void *o, const char *lang );
 
 linuxdvb_satconf_t *linuxdvb_satconf_create
-  ( linuxdvb_frontend_t *lfe,
-    const char *type, const char *uuid, htsmsg_t *conf );
+  ( linuxdvb_frontend_t *lfe, htsmsg_t *conf );
 
 void linuxdvb_satconf_delete ( linuxdvb_satconf_t *ls, int delconf );
 

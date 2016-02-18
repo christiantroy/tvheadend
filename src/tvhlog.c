@@ -477,10 +477,6 @@ tvhlog_end ( void )
  * Configuration
  */
 
-static void tvhlog_class_save(idnode_t *self)
-{
-}
-
 static const void *
 tvhlog_class_path_get ( void *o )
 {
@@ -626,7 +622,6 @@ const idclass_t tvhlog_conf_class = {
   .ic_caption    = N_("Debugging"),
   .ic_event      = "tvhlog_conf",
   .ic_perm_def   = ACCESS_ADMIN,
-  .ic_save       = tvhlog_class_save,
   .ic_groups     = (const property_group_t[]) {
     {
       .name   = N_("Settings"),
@@ -639,6 +634,9 @@ const idclass_t tvhlog_conf_class = {
       .type   = PT_STR,
       .id     = "path",
       .name   = N_("Debug log path"),
+      /* Should this really be called Debug log path? Don't you need to
+       * enter a filename here not just a path? */
+      .desc   = N_("Enter a filename you want to save the debug log to."),
       .get    = tvhlog_class_path_get,
       .set    = tvhlog_class_path_set,
       .group  = 1,
@@ -647,6 +645,7 @@ const idclass_t tvhlog_conf_class = {
       .type   = PT_BOOL,
       .id     = "enable_syslog",
       .name   = N_("Enable syslog"),
+      .desc   = N_("Enable/disable logging to syslog."),
       .get    = tvhlog_class_enable_syslog_get,
       .set    = tvhlog_class_enable_syslog_set,
       .group  = 1,
@@ -655,6 +654,7 @@ const idclass_t tvhlog_conf_class = {
       .type   = PT_BOOL,
       .id     = "syslog",
       .name   = N_("Debug to syslog"),
+      .desc   = N_("Enable/disable debugging output to syslog."),
       .get    = tvhlog_class_debug_syslog_get,
       .set    = tvhlog_class_debug_syslog_set,
       .group  = 1,
@@ -663,6 +663,9 @@ const idclass_t tvhlog_conf_class = {
       .type   = PT_STR,
       .id     = "debugsubs",
       .name   = N_("Debug subsystems"),
+      .desc   = N_("Enter comma-separated list of subsystems you want "
+                   "debugging output for (e.g "
+                   "+linuxdvb,+subscriptions,+mpegts)."),
       .get    = tvhlog_class_debugsubs_get,
       .set    = tvhlog_class_debugsubs_set,
       .group  = 1,
@@ -671,6 +674,7 @@ const idclass_t tvhlog_conf_class = {
       .type   = PT_BOOL,
       .id     = "trace",
       .name   = N_("Debug trace (low-level)"),
+      .desc   = N_("Enable/disable inclusion of low-level debug traces."),
       .get    = tvhlog_class_trace_get,
       .set    = tvhlog_class_trace_set,
 #if !ENABLE_TRACE
@@ -682,6 +686,8 @@ const idclass_t tvhlog_conf_class = {
       .type   = PT_STR,
       .id     = "tracesubs",
       .name   = N_("Trace subsystems"),
+      .desc   = N_("Enter comma-separated list of subsystems you want "
+                   "to get traces for (e.g +linuxdvb,+subscriptions,+mpegts)."),
       .get    = tvhlog_class_tracesubs_get,
       .set    = tvhlog_class_tracesubs_set,
 #if !ENABLE_TRACE
@@ -693,6 +699,7 @@ const idclass_t tvhlog_conf_class = {
       .type   = PT_BOOL,
       .id     = "libav",
       .name   = N_("Debug libav log"),
+      .desc   = N_("Enable/disable libav log output."),
       .get    = tvhlog_class_libav_get,
       .set    = tvhlog_class_libav_set,
       .group  = 1,

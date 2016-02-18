@@ -1093,6 +1093,8 @@ access_entry_destroy(access_entry_t *ae, int delconf)
   access_ipmask_t *ai;
   char ubuf[UUID_HEX_SIZE];
 
+  idnode_save_check(&ae->ae_id, delconf);
+
   if (delconf)
     hts_settings_remove("accesscontrol/%s", idnode_uuid_as_str(&ae->ae_id, ubuf));
 
@@ -1146,19 +1148,6 @@ access_destroy_by_channel_tag(channel_tag_t *ct, int delconf)
 /**
  *
  */
-void
-access_entry_save(access_entry_t *ae)
-{
-  htsmsg_t *c = htsmsg_create_map();
-  char ubuf[UUID_HEX_SIZE];
-  idnode_save(&ae->ae_id, c);
-  hts_settings_save(c, "accesscontrol/%s", idnode_uuid_as_str(&ae->ae_id, ubuf));
-  htsmsg_destroy(c);
-}
-
-/**
- *
- */
 static void
 access_entry_reindex(void)
 {
@@ -1168,7 +1157,7 @@ access_entry_reindex(void)
   TAILQ_FOREACH(ae, &access_entries, ae_link) {
     if (ae->ae_index != i) {
       ae->ae_index = i;
-      access_entry_save(ae);
+      idnode_changed(&ae->ae_id);
     }
     i++;
   }
@@ -1178,11 +1167,16 @@ access_entry_reindex(void)
  * Class definition
  * **************************************************************************/
 
-static void
-access_entry_class_save(idnode_t *self)
+static htsmsg_t *
+access_entry_class_save(idnode_t *self, char *filename, size_t fsize)
 {
+  access_entry_t *ae = (access_entry_t *)self;
+  char ubuf[UUID_HEX_SIZE];
+  htsmsg_t *c = htsmsg_create_map();
   access_entry_update_rights((access_entry_t *)self);
-  access_entry_save((access_entry_t *)self);
+  idnode_save(&ae->ae_id, c);
+  snprintf(filename, fsize, "accesscontrol/%s", idnode_uuid_as_str(&ae->ae_id, ubuf));
+  return c;
 }
 
 static void
@@ -1428,19 +1422,21 @@ const idclass_t access_entry_class = {
       .type     = PT_BOOL,
       .id       = "enabled",
       .name     = N_("Enabled"),
+      .desc     = N_("Enable/disable the entry."),
       .off      = offsetof(access_entry_t, ae_enabled),
     },
     {
       .type     = PT_STR,
       .id       = "username",
       .name     = N_("Username"),
+      .desc     = N_("Username for the entry (login username)."),
       .off      = offsetof(access_entry_t, ae_username),
     },
     {
       .type     = PT_STR,
       .id       = "prefix",
       .name     = N_("Allowed networks"),
-      .desc     = N_("List of allowed IPv4 or IPv6 hosts or networks (comma separated)"),
+      .desc     = N_("List of allowed IPv4 or IPv6 hosts or networks (comma-separated)."),
       .set      = access_entry_class_prefix_set,
       .get      = access_entry_class_prefix_get,
       .opts     = PO_ADVANCED
@@ -1449,6 +1445,7 @@ const idclass_t access_entry_class = {
       .type     = PT_INT,
       .id       = "uilevel",
       .name     = N_("User interface level"),
+      .desc     = N_("Default user interface level."),
       .off      = offsetof(access_entry_t, ae_uilevel),
       .list     = uilevel_get_list,
       .opts     = PO_EXPERT
@@ -1457,6 +1454,7 @@ const idclass_t access_entry_class = {
       .type     = PT_INT,
       .id       = "uilevel_nochange",
       .name     = N_("Persistent user interface level"),
+      .desc     = N_("Prevent changing of interface view level."),
       .off      = offsetof(access_entry_t, ae_uilevel_nochange),
       .list     = uilevel_nochange_get_list,
       .opts     = PO_EXPERT
@@ -1465,6 +1463,7 @@ const idclass_t access_entry_class = {
       .type     = PT_STR,
       .id       = "lang",
       .name     = N_("Language"),
+      .desc     = N_("Default language."),
       .list     = language_get_list,
       .off      = offsetof(access_entry_t, ae_lang),
       .opts     = PO_ADVANCED,
@@ -1473,6 +1472,7 @@ const idclass_t access_entry_class = {
       .type     = PT_STR,
       .id       = "langui",
       .name     = N_("Web interface language"),
+      .desc     = N_("Default web interface language."),
       .list     = language_get_ui_list,
       .off      = offsetof(access_entry_t, ae_lang_ui),
       .opts     = PO_ADVANCED,
@@ -1481,18 +1481,23 @@ const idclass_t access_entry_class = {
       .type     = PT_BOOL,
       .id       = "streaming",
       .name     = N_("Streaming"),
+      .desc     = N_("Allow/disallow HTTP streaming."),
       .off      = offsetof(access_entry_t, ae_streaming),
     },
     {
       .type     = PT_BOOL,
       .id       = "adv_streaming",
       .name     = N_("Advanced streaming"),
+      .desc     = N_("Allow/disallow advanced http streaming, "
+                     "e.g, direct service or mux links."),
       .off      = offsetof(access_entry_t, ae_adv_streaming),
     },
     {
       .type     = PT_BOOL,
       .id       = "htsp_streaming",
       .name     = N_("HTSP streaming"),
+      .desc     = N_("Allow/disallow HTSP protocol streaming, "
+                     "e.g Kodi (via pvr.hts) or Movian."),
       .off      = offsetof(access_entry_t, ae_htsp_streaming),
     },
     {
@@ -1500,6 +1505,8 @@ const idclass_t access_entry_class = {
       .islist   = 1,
       .id       = "profile",
       .name     = N_("Streaming profiles"),
+      .desc     = N_("The streaming profile to use/used. If not set, "
+                     "the default will be used."),
       .set      = access_entry_profile_set,
       .get      = access_entry_profile_get,
       .list     = profile_class_get_list,
@@ -1510,30 +1517,39 @@ const idclass_t access_entry_class = {
       .type     = PT_BOOL,
       .id       = "dvr",
       .name     = N_("Video recorder"),
+      .desc     = N_("Allow/disallow access to video recorder "
+                     "functionality (including Autorecs)."),
       .off      = offsetof(access_entry_t, ae_dvr),
     },
     {
       .type     = PT_BOOL,
       .id       = "htsp_dvr",
       .name     = N_("HTSP DVR"),
+      .desc     = N_("Allow/disallow access to DVR via the HTSP "
+                     "protocol."),
       .off      = offsetof(access_entry_t, ae_htsp_dvr),
     },
     {
       .type     = PT_BOOL,
       .id       = "all_dvr",
-      .name     = N_("All DVR"),
+      .name     = N_("View all DVR entries"),
+      .desc     = N_("Allow/disallow access to other users DVR entries "
+                     "(read only)."),
       .off      = offsetof(access_entry_t, ae_all_dvr),
     },
     {
       .type     = PT_BOOL,
       .id       = "all_rw_dvr",
       .name     = N_("All DVR (rw)"),
+      .desc     = N_("Allow/disallow read/write access to other users' "
+                     "DVR entries."),
       .off      = offsetof(access_entry_t, ae_all_rw_dvr),
     },
     {
       .type     = PT_BOOL,
       .id       = "failed_dvr",
       .name     = N_("Failed DVR"),
+      .desc     = N_("Allow/disallow access to all failed DVR entries."),
       .off      = offsetof(access_entry_t, ae_failed_dvr),
       .opts     = PO_ADVANCED | PO_HIDDEN,
     },
@@ -1542,6 +1558,8 @@ const idclass_t access_entry_class = {
       .islist   = 1,
       .id       = "dvr_config",
       .name     = N_("DVR configuration profiles"),
+      .desc     = N_("Allowed DVR profiles. This limits the profiles "
+                     "the user has access to."),
       .set      = access_entry_dvr_config_set,
       .get      = access_entry_dvr_config_get,
       .list     = dvr_entry_class_config_name_list,
@@ -1552,18 +1570,22 @@ const idclass_t access_entry_class = {
       .type     = PT_BOOL,
       .id       = "webui",
       .name     = N_("Web interface"),
+      .desc     = N_("Allow/disallow web interface access (this "
+                     " includes access to the EPG)."),
       .off      = offsetof(access_entry_t, ae_webui),
     },
     {
       .type     = PT_BOOL,
       .id       = "admin",
       .name     = N_("Admin"),
+      .desc     = N_("Allow/disallow access to the 'Configuration' tab."),
       .off      = offsetof(access_entry_t, ae_admin),
     },
     {
       .type     = PT_INT,
       .id       = "conn_limit_type",
       .name     = N_("Connection limit type"),
+      .desc     = N_("Restrict connections to this type."),
       .off      = offsetof(access_entry_t, ae_conn_limit_type),
       .list     = access_entry_conn_limit_type_enum,
       .opts     = PO_EXPERT
@@ -1572,6 +1594,8 @@ const idclass_t access_entry_class = {
       .type     = PT_U32,
       .id       = "conn_limit",
       .name     = N_("Limit connections"),
+      .desc     = N_("The number of allowed connections this user can "
+                     "make to the server."),
       .off      = offsetof(access_entry_t, ae_conn_limit),
       .opts     = PO_EXPERT
     },
@@ -1580,6 +1604,7 @@ const idclass_t access_entry_class = {
       .intsplit = CHANNEL_SPLIT,
       .id       = "channel_min",
       .name     = N_("Minimal channel number"),
+      .desc     = N_("Lowest channel number the user can access."),
       .off      = offsetof(access_entry_t, ae_chmin),
     },
     {
@@ -1587,12 +1612,16 @@ const idclass_t access_entry_class = {
       .intsplit = CHANNEL_SPLIT,
       .id       = "channel_max",
       .name     = N_("Maximal channel number"),
+      .desc     = N_("Highest channel number the user can access."),
       .off      = offsetof(access_entry_t, ae_chmax),
     },
     {
       .type     = PT_BOOL,
       .id       = "channel_tag_exclude",
       .name     = N_("Exclude channel tags"),
+      .desc     = N_("Enable exclusion of user-config defined channel "
+                     "tags. This will prevent the user from accessing "
+                     "channels associated with the tags selected (below)."),
       .off      = offsetof(access_entry_t, ae_chtags_exclude),
       .opts     = PO_ADVANCED,
     },
@@ -1601,6 +1630,7 @@ const idclass_t access_entry_class = {
       .islist   = 1,
       .id       = "channel_tag",
       .name     = N_("Channel tags"),
+      .desc     = N_("Channel tags the user is allowed access to/excluded from."),
       .set      = access_entry_chtag_set,
       .get      = access_entry_chtag_get,
       .list     = channel_tag_class_get_list,
@@ -1611,6 +1641,7 @@ const idclass_t access_entry_class = {
       .type     = PT_STR,
       .id       = "comment",
       .name     = N_("Comment"),
+      .desc     = N_("Free-form text field, enter whatever you like here."),
       .off      = offsetof(access_entry_t, ae_comment),
     },
     {
@@ -1730,6 +1761,8 @@ passwd_entry_destroy(passwd_entry_t *pw, int delconf)
   if (pw == NULL)
     return;
 
+  idnode_save_check(&pw->pw_id, delconf);
+
   if (delconf)
     hts_settings_remove("passwd/%s", idnode_uuid_as_str(&pw->pw_id, ubuf));
   TAILQ_REMOVE(&passwd_entries, pw, pw_link);
@@ -1741,20 +1774,15 @@ passwd_entry_destroy(passwd_entry_t *pw, int delconf)
   free(pw);
 }
 
-void
-passwd_entry_save(passwd_entry_t *pw)
+static htsmsg_t *
+passwd_entry_class_save(idnode_t *self, char *filename, size_t fsize)
 {
-  htsmsg_t *c = htsmsg_create_map();
+  passwd_entry_t *pw = (passwd_entry_t *)self;
   char ubuf[UUID_HEX_SIZE];
+  htsmsg_t *c = htsmsg_create_map();
   idnode_save(&pw->pw_id, c);
-  hts_settings_save(c, "passwd/%s", idnode_uuid_as_str(&pw->pw_id, ubuf));
-  htsmsg_destroy(c);
-}
-
-static void
-passwd_entry_class_save(idnode_t *self)
-{
-  passwd_entry_save((passwd_entry_t *)self);
+  snprintf(filename, fsize, "passwd/%s", idnode_uuid_as_str(&pw->pw_id, ubuf));
+  return c;
 }
 
 static void
@@ -1828,18 +1856,22 @@ const idclass_t passwd_entry_class = {
       .type     = PT_BOOL,
       .id       = "enabled",
       .name     = N_("Enabled"),
+      .desc     = N_("Enable/disable the entry."),
       .off      = offsetof(passwd_entry_t, pw_enabled),
     },
     {
       .type     = PT_STR,
       .id       = "username",
       .name     = N_("Username"),
+      .desc     = N_("Username of the entry (this should match a "
+                     "username from within the \"Access Entries\" tab."),
       .off      = offsetof(passwd_entry_t, pw_username),
     },
     {
       .type     = PT_STR,
       .id       = "password",
       .name     = N_("Password"),
+      .desc     = N_("Password for the entry."),
       .off      = offsetof(passwd_entry_t, pw_password),
       .opts     = PO_PASSWORD | PO_NOSAVE,
       .set      = passwd_entry_class_password_set,
@@ -1856,6 +1888,7 @@ const idclass_t passwd_entry_class = {
       .type     = PT_STR,
       .id       = "comment",
       .name     = N_("Comment"),
+      .desc     = N_("Free-form text field, enter whatever you like here."),
       .off      = offsetof(passwd_entry_t, pw_comment),
     },
     {
@@ -1902,30 +1935,26 @@ ipblock_entry_create(const char *uuid, htsmsg_t *conf)
 }
 
 static void
-ipblock_entry_destroy(ipblock_entry_t *ib)
+ipblock_entry_destroy(ipblock_entry_t *ib, int delconf)
 {
   if (ib == NULL)
     return;
+  idnode_save_check(&ib->ib_id, delconf);
   TAILQ_REMOVE(&ipblock_entries, ib, ib_link);
   idnode_unlink(&ib->ib_id);
   free(ib->ib_comment);
   free(ib);
 }
 
-void
-ipblock_entry_save(ipblock_entry_t *ib)
+static htsmsg_t *
+ipblock_entry_class_save(idnode_t *self, char *filename, size_t fsize)
 {
+  ipblock_entry_t *ib = (ipblock_entry_t *)self;
   htsmsg_t *c = htsmsg_create_map();
   char ubuf[UUID_HEX_SIZE];
   idnode_save(&ib->ib_id, c);
-  hts_settings_save(c, "ipblock/%s", idnode_uuid_as_str(&ib->ib_id, ubuf));
-  htsmsg_destroy(c);
-}
-
-static void
-ipblock_entry_class_save(idnode_t *self)
-{
-  ipblock_entry_save((ipblock_entry_t *)self);
+  snprintf(filename, fsize, "ipblock/%s", idnode_uuid_as_str(&ib->ib_id, ubuf));
+  return c;
 }
 
 static const char *
@@ -1945,7 +1974,7 @@ ipblock_entry_class_delete(idnode_t *self)
   char ubuf[UUID_HEX_SIZE];
 
   hts_settings_remove("ipblock/%s", idnode_uuid_as_str(&ib->ib_id, ubuf));
-  ipblock_entry_destroy(ib);
+  ipblock_entry_destroy(ib, 1);
 }
 
 static int
@@ -1976,18 +2005,22 @@ const idclass_t ipblock_entry_class = {
       .type     = PT_BOOL,
       .id       = "enabled",
       .name     = N_("Enabled"),
+      .desc     = N_("Enable/disable the entry."),
       .off      = offsetof(ipblock_entry_t, ib_enabled),
     },
     {
       .type     = PT_STR,
       .id       = "prefix",
       .name     = N_("Network prefix"),
+      .desc     = N_("The network prefix(es) to block, "
+                     "e.g.192.168.2.0/24 (comma-separated list)."),
       .set      = ipblock_entry_class_prefix_set,
       .get      = ipblock_entry_class_prefix_get,
     },
     {
       .type     = PT_STR,
       .id       = "comment",
+      .desc     = N_("Free-form text field, enter whatever you like here."),
       .name     = N_("Comment"),
       .off      = offsetof(ipblock_entry_t, ib_comment),
     },
@@ -2048,7 +2081,7 @@ access_init(int createdefault, int noacl)
     ae = access_entry_create(NULL, NULL);
 
     free(ae->ae_comment);
-    ae->ae_comment = strdup("Default access entry");
+    ae->ae_comment = strdup(ACCESS_DEFAULT_COMMENT);
 
     ae->ae_enabled        = 1;
     ae->ae_streaming      = 1;
@@ -2063,11 +2096,7 @@ access_init(int createdefault, int noacl)
     ae->ae_admin          = 1;
     access_entry_update_rights(ae);
 
-    TAILQ_INIT(&ae->ae_ipmasks);
-
-    access_set_prefix_default(&ae->ae_ipmasks);
-
-    access_entry_save(ae);
+    idnode_changed(&ae->ae_id);
 
     tvhlog(LOG_WARNING, "access",
 	   "Created default wide open access controle entry");
@@ -2103,7 +2132,7 @@ access_done(void)
   while ((pw = TAILQ_FIRST(&passwd_entries)) != NULL)
     passwd_entry_destroy(pw, 0);
   while ((ib = TAILQ_FIRST(&ipblock_entries)) != NULL)
-    ipblock_entry_destroy(ib);
+    ipblock_entry_destroy(ib, 0);
   free((void *)superuser_username);
   superuser_username = NULL;
   free((void *)superuser_password);

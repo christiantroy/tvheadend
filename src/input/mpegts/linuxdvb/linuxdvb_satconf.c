@@ -138,12 +138,12 @@ linuxdvb_satconf_class_get_title ( idnode_t *p, const char *lang )
 }
 
 static void
-linuxdvb_satconf_class_save ( idnode_t *s )
+linuxdvb_satconf_class_changed ( idnode_t *s )
 {
   linuxdvb_satconf_t  *ls  = (linuxdvb_satconf_t*)s;
   linuxdvb_frontend_t *lfe = (linuxdvb_frontend_t*)ls->ls_frontend;
   linuxdvb_adapter_t  *la  = lfe->lfe_adapter;
-  linuxdvb_adapter_save(la);
+  linuxdvb_adapter_changed(la);
 }
 
 static const void *
@@ -214,12 +214,15 @@ const idclass_t linuxdvb_satconf_class =
   .ic_caption    = N_("DVB-S satellite configuration"),
   .ic_event      = "linuxdvb_satconf",
   .ic_get_title  = linuxdvb_satconf_class_get_title,
-  .ic_save       = linuxdvb_satconf_class_save,
+  .ic_changed    = linuxdvb_satconf_class_changed,
   .ic_properties = (const property_t[]) {
     {
       .type     = PT_BOOL,
       .id       = "early_tune",
       .name     = N_("Tune before DiseqC"),
+      .desc     = N_("One tune request (setup) is sent before the "
+                     "DiseqC sequence (voltage, tone settings). "
+                     "Some linux drivers require this procedure."),
       .off      = offsetof(linuxdvb_satconf_t, ls_early_tune),
       .opts     = PO_ADVANCED,
       .def.i    = 1
@@ -228,6 +231,12 @@ const idclass_t linuxdvb_satconf_class =
       .type     = PT_INT,
       .id       = "diseqc_repeats",
       .name     = N_("DiseqC repeats"),
+      .desc     = N_("Number of repeats for the DiseqC commands "
+                     "(default is zero - no DiseqC repeats). "
+                     "Note: this represents the number of repeats, not "
+                     "the number of requests - so 0 means 'send once: "
+                     "don't repeat', 1 means 'send twice: send once, "
+                     "then send one repeat', etc."),
       .off      = offsetof(linuxdvb_satconf_t, ls_diseqc_repeats),
       .opts     = PO_ADVANCED,
       .def.i    = 0
@@ -236,6 +245,11 @@ const idclass_t linuxdvb_satconf_class =
       .type     = PT_BOOL,
       .id       = "diseqc_full",
       .name     = N_("Full DiseqC"),
+      .desc     = N_("Always send the whole DiseqC sequence including "
+                     "LNB setup (voltage, tone). If this is not "
+                     "checked, only changed settings are sent, which "
+                     "may cause issues with some drivers. If the tuning "
+                     "is not reliable, try activating this option."),
       .off      = offsetof(linuxdvb_satconf_t, ls_diseqc_full),
       .opts     = PO_ADVANCED,
       .def.i    = 1
@@ -244,6 +258,9 @@ const idclass_t linuxdvb_satconf_class =
       .type     = PT_BOOL,
       .id       = "lnb_poweroff",
       .name     = N_("Turn off LNB when idle"),
+      .desc     = N_("Switch off the power to the LNB when idle. Note: "
+                     "this may cause interference with other devices "
+                     "when the LNB is powered back up."),
       .off      = offsetof(linuxdvb_satconf_t, ls_lnb_poweroff),
       .opts     = PO_ADVANCED,
       .def.i    = 1
@@ -289,6 +306,7 @@ const idclass_t linuxdvb_satconf_2port_class =
       .type     = PT_STR,
       .id       = "network_a",
       .name     = N_("A"),
+      .desc     = N_("Network for port A."),
       .islist   = 1,
       .get      = linuxdvb_satconf_class_network_get0,
       .set      = linuxdvb_satconf_class_network_set0,
@@ -300,6 +318,7 @@ const idclass_t linuxdvb_satconf_2port_class =
       .type     = PT_STR,
       .id       = "network_b",
       .name     = N_("B"),
+      .desc     = N_("Network for port B."),
       .islist   = 1,
       .get      = linuxdvb_satconf_class_network_get1,
       .set      = linuxdvb_satconf_class_network_set1,
@@ -324,6 +343,7 @@ const idclass_t linuxdvb_satconf_4port_class =
       .type     = PT_STR,
       .id       = "network_aa",
       .name     = N_("AA"),
+      .desc     = N_("Network for port AA."),
       .islist   = 1,
       .get      = linuxdvb_satconf_class_network_get0,
       .set      = linuxdvb_satconf_class_network_set0,
@@ -335,6 +355,7 @@ const idclass_t linuxdvb_satconf_4port_class =
       .type     = PT_STR,
       .id       = "network_ab",
       .name     = N_("AB"),
+      .desc     = N_("Network for port AB."),
       .islist   = 1,
       .get      = linuxdvb_satconf_class_network_get1,
       .set      = linuxdvb_satconf_class_network_set1,
@@ -346,6 +367,7 @@ const idclass_t linuxdvb_satconf_4port_class =
       .type     = PT_STR,
       .id       = "network_ba",
       .name     = N_("BA"),
+      .desc     = N_("Network for port BA."),
       .islist   = 1,
       .get      = linuxdvb_satconf_class_network_get2,
       .set      = linuxdvb_satconf_class_network_set2,
@@ -357,6 +379,7 @@ const idclass_t linuxdvb_satconf_4port_class =
       .type     = PT_STR,
       .id       = "network_bb",
       .name     = N_("BB"),
+      .desc     = N_("Network for port BB."),
       .islist   = 1,
       .get      = linuxdvb_satconf_class_network_get3,
       .set      = linuxdvb_satconf_class_network_set3,
@@ -438,6 +461,7 @@ const idclass_t linuxdvb_satconf_en50494_class =
       .type     = PT_U16,
       .id       = "id",
       .name     = N_("SCR (ID)"),
+      .desc     = N_("SCR (Satellite Channel Router) ID."),
       .get      = linuxdvb_satconf_class_en50494_id_get,
       .set      = linuxdvb_satconf_class_en50494_id_set,
       .list     = linuxdvb_en50494_id_list,
@@ -447,6 +471,7 @@ const idclass_t linuxdvb_satconf_en50494_class =
       .type     = PT_U16,
       .id       = "pin",
       .name     = N_("PIN"),
+      .desc     = N_("PIN."),
       .get      = linuxdvb_satconf_class_en50494_pin_get,
       .set      = linuxdvb_satconf_class_en50494_pin_set,
       .list     = linuxdvb_en50494_pin_list,
@@ -456,6 +481,7 @@ const idclass_t linuxdvb_satconf_en50494_class =
       .type     = PT_U16,
       .id       = "frequency",
       .name     = N_("Frequency (MHz)"),
+      .desc     = N_("Frequency (in MHz)."),
       .get      = linuxdvb_satconf_class_en50494_freq_get,
       .set      = linuxdvb_satconf_class_en50494_freq_set,
       .opts     = PO_NOSAVE,
@@ -464,6 +490,7 @@ const idclass_t linuxdvb_satconf_en50494_class =
       .type     = PT_STR,
       .id       = "network_a",
       .name     = N_("Network A"),
+      .desc     = N_("Network for port A."),
       .islist   = 1,
       .get      = linuxdvb_satconf_class_network_get0,
       .set      = linuxdvb_satconf_class_network_set0,
@@ -475,6 +502,7 @@ const idclass_t linuxdvb_satconf_en50494_class =
       .type     = PT_STR,
       .id       = "network_b",
       .name     = N_("Network B"),
+      .desc     = N_("Network for port B."),
       .islist   = 1,
       .get      = linuxdvb_satconf_class_network_get1,
       .set      = linuxdvb_satconf_class_network_set1,
@@ -500,6 +528,7 @@ const idclass_t linuxdvb_satconf_advanced_class =
       .type     = PT_INT,
       .id       = "orbital_pos",
       .name     = N_("Orbital positions"),
+      .desc     = N_("Orbital positions."),
       .get      = linuxdvb_satconf_class_orbitalpos_get,
       .set      = linuxdvb_satconf_class_orbitalpos_set,
     },
@@ -507,6 +536,8 @@ const idclass_t linuxdvb_satconf_advanced_class =
       .type     = PT_BOOL,
       .id       = "switch_rotor",
       .name     = N_("Switch before rotor"),
+      .desc     = N_("If the DiseqC switch is located before the rotor "
+                     "(i.e. tuner - switch - rotor), enable this."),
       .off      = offsetof(linuxdvb_satconf_t, ls_switch_rotor),
       .opts     = PO_ADVANCED,
     },
@@ -514,6 +545,10 @@ const idclass_t linuxdvb_satconf_advanced_class =
       .type     = PT_U32,
       .id       = "max_rotor_move",
       .name     = N_("Rotor initialization time (seconds)"),
+      .desc     = N_("Upon start, Tvheadend doesn't know the last rotor "
+                     "position. This value defines the initial rotor "
+                     "movement. TVHeadend waits the specified time when "
+                     "the first movement is requested."),
       .off      = offsetof(linuxdvb_satconf_t, ls_max_rotor_move),
       .opts     = PO_ADVANCED,
       .def.u32  = 120
@@ -522,6 +557,8 @@ const idclass_t linuxdvb_satconf_advanced_class =
       .type     = PT_U32,
       .id       = "min_rotor_move",
       .name     = N_("Minimum rotor time (seconds)"),
+      .desc     = N_("The minimum delay after the rotor movement "
+                     "command is sent."),
       .off      = offsetof(linuxdvb_satconf_t, ls_min_rotor_move),
       .opts     = PO_ADVANCED,
     },
@@ -529,6 +566,7 @@ const idclass_t linuxdvb_satconf_advanced_class =
       .type     = PT_DBL,
       .id       = "site_lat",
       .name     = N_("Site latitude"),
+      .desc     = N_("Site latitude."),
       .off      = offsetof(linuxdvb_satconf_t, ls_site_lat),
       .opts     = PO_ADVANCED,
     },
@@ -536,6 +574,7 @@ const idclass_t linuxdvb_satconf_advanced_class =
       .type     = PT_DBL,
       .id       = "site_lon",
       .name     = N_("Site longitude"),
+      .desc     = N_("Site longitude."),
       .off      = offsetof(linuxdvb_satconf_t, ls_site_lon),
       .opts     = PO_ADVANCED,
     },
@@ -543,6 +582,7 @@ const idclass_t linuxdvb_satconf_advanced_class =
       .type     = PT_BOOL,
       .id       = "site_lat_south",
       .name     = N_("Southern hemisphere (latitude direction)"),
+      .desc     = N_("Southern hemisphere (latitude direction)."),
       .off      = offsetof(linuxdvb_satconf_t, ls_site_lat_south),
       .opts     = PO_ADVANCED,
       .def.i    = 0
@@ -551,6 +591,7 @@ const idclass_t linuxdvb_satconf_advanced_class =
       .type     = PT_BOOL,
       .id       = "site_lon_west",
       .name     = N_("Western hemisphere (latitude direction)"),
+      .desc     = N_("Western hemisphere (latitude direction)."),
       .off      = offsetof(linuxdvb_satconf_t, ls_site_lon_west),
       .opts     = PO_ADVANCED,
       .def.i    = 0
@@ -559,6 +600,7 @@ const idclass_t linuxdvb_satconf_advanced_class =
       .type     = PT_INT,
       .id       = "site_altitude",
       .name     = N_("Altitude (meters)"),
+      .desc     = N_("Altitude (in meters)."),
       .off      = offsetof(linuxdvb_satconf_t, ls_site_altitude),
       .opts     = PO_ADVANCED,
       .def.i    = 0
@@ -567,6 +609,7 @@ const idclass_t linuxdvb_satconf_advanced_class =
       .type     = PT_U32,
       .id       = "motor_rate",
       .name     = N_("Motor rate (milliseconds/deg)"),
+      .desc     = N_("Motor rate (in milliseconds/deg)."),
       .off      = offsetof(linuxdvb_satconf_t, ls_motor_rate),
     },
     {}
@@ -957,15 +1000,21 @@ linuxdvb_satconf_match_mux
 
 linuxdvb_satconf_t *
 linuxdvb_satconf_create
-  ( linuxdvb_frontend_t *lfe, const char *type, const char *uuid,
-    htsmsg_t *conf )
+  ( linuxdvb_frontend_t *lfe, htsmsg_t *conf )
 {
   int i;
   htsmsg_t *l, *e;
   htsmsg_field_t *f;
   linuxdvb_satconf_ele_t *lse;
-  const char *str;
-  struct linuxdvb_satconf_type *lst = linuxdvb_satconf_type_find(type);
+  const char *str, *type = NULL, *uuid = NULL;
+  struct linuxdvb_satconf_type *lst;
+
+  if (conf) {
+    type = htsmsg_get_str(conf, "type");
+    uuid = htsmsg_get_str(conf, "uuid");
+  }
+
+  lst = linuxdvb_satconf_type_find(type);
   assert(lst);
   
   linuxdvb_satconf_t *ls = calloc(1, sizeof(linuxdvb_satconf_t));
@@ -987,7 +1036,7 @@ linuxdvb_satconf_create
   if (conf) {
 
     /* Load elements */
-    // Note: we do things this way else hte orbital_pos field in advanced
+    // Note: we do things this way else the orbital_pos field in advanced
     // will result in extra elements
     if ((l = htsmsg_get_list(conf, "elements"))) {
       HTSMSG_FOREACH(f, l) {
@@ -1253,10 +1302,10 @@ linuxdvb_satconf_ele_class_get_childs ( idnode_t *o )
 }
 
 static void
-linuxdvb_satconf_ele_class_save ( idnode_t *in )
+linuxdvb_satconf_ele_class_changed ( idnode_t *in )
 {
   linuxdvb_satconf_ele_t *lse = (linuxdvb_satconf_ele_t*)in;
-  linuxdvb_satconf_class_save(&lse->lse_parent->ls_id);
+  linuxdvb_satconf_class_changed(&lse->lse_parent->ls_id);
 }
 
 const idclass_t linuxdvb_satconf_ele_class =
@@ -1266,7 +1315,7 @@ const idclass_t linuxdvb_satconf_ele_class =
   .ic_event      = "linuxdvb_satconf_ele",
   .ic_get_title  = linuxdvb_satconf_ele_class_get_title,
   .ic_get_childs = linuxdvb_satconf_ele_class_get_childs,
-  .ic_save       = linuxdvb_satconf_ele_class_save,
+  .ic_changed    = linuxdvb_satconf_ele_class_changed,
   .ic_properties = (const property_t[]) {
     {
       .type     = PT_BOOL,
@@ -1347,6 +1396,7 @@ void
 linuxdvb_satconf_ele_destroy ( linuxdvb_satconf_ele_t *ls )
 {
   TAILQ_REMOVE(&ls->lse_parent->ls_elements, ls, lse_link);
+  idnode_save_check(&ls->lse_id, 1);
   idnode_unlink(&ls->lse_id);
   if (ls->lse_lnb)     linuxdvb_lnb_destroy(ls->lse_lnb);
   if (ls->lse_switch)  linuxdvb_switch_destroy(ls->lse_switch);
@@ -1412,6 +1462,7 @@ linuxdvb_satconf_delete ( linuxdvb_satconf_t *ls, int delconf )
     nxt = TAILQ_NEXT(lse, lse_link);
     linuxdvb_satconf_ele_destroy(lse);
   }
+  idnode_save_check(&ls->ls_id, 1);
   idnode_unlink(&ls->ls_id);
   free(ls);
 }
@@ -1428,11 +1479,11 @@ linuxdvb_diseqc_class_get_title ( idnode_t *o, const char *lang )
 }
 
 static void
-linuxdvb_diseqc_class_save ( idnode_t *o )
+linuxdvb_diseqc_class_changed ( idnode_t *o )
 {
   linuxdvb_diseqc_t *ld = (linuxdvb_diseqc_t*)o;
   if (ld->ld_satconf)
-    linuxdvb_satconf_ele_class_save(&ld->ld_satconf->lse_id);
+    linuxdvb_satconf_ele_class_changed(&ld->ld_satconf->lse_id);
 }
 
 const idclass_t linuxdvb_diseqc_class =
@@ -1441,7 +1492,7 @@ const idclass_t linuxdvb_diseqc_class =
   .ic_caption     = N_("DiseqC"),
   .ic_event       = "linuxdvb_diseqc",
   .ic_get_title   = linuxdvb_diseqc_class_get_title,
-  .ic_save        = linuxdvb_diseqc_class_save,
+  .ic_changed     = linuxdvb_diseqc_class_changed,
 };
 
 linuxdvb_diseqc_t *
@@ -1469,6 +1520,7 @@ linuxdvb_diseqc_create0
 void
 linuxdvb_diseqc_destroy ( linuxdvb_diseqc_t *ld )
 {
+  idnode_save_check(&ld->ld_id, 1);
   idnode_unlink(&ld->ld_id);
   free((void *)ld->ld_type);
 }

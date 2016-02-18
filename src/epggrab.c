@@ -185,14 +185,23 @@ static void _epggrab_load ( void )
   xmltv_load();
 }
 
-void epggrab_save ( void )
-{
-  epggrab_module_t *mod;
-  htsmsg_t *m, *a;
+/* **************************************************************************
+ * Class
+ * *************************************************************************/
 
+static void
+epggrab_class_changed(idnode_t *self)
+{
   /* Register */
   epggrab_confver++;
   pthread_cond_signal(&epggrab_cond);
+}
+
+static htsmsg_t *
+epggrab_class_save(idnode_t *self, char *filename, size_t fsize)
+{
+  epggrab_module_t *mod;
+  htsmsg_t *m, *a;
 
   /* Save */
   m = htsmsg_create_map();
@@ -205,17 +214,8 @@ void epggrab_save ( void )
     htsmsg_add_msg(a, mod->id, m);
   }
   htsmsg_add_msg(m, "modules", a);
-  hts_settings_save(m, "epggrab/config");
-  htsmsg_destroy(m);
-}
-
-/* **************************************************************************
- * Class
- * *************************************************************************/
-
-static void epggrab_class_save(idnode_t *self)
-{
-  epggrab_save();
+  snprintf(filename, fsize, "epggrab/config");
+  return m;
 }
 
 epggrab_conf_t epggrab_conf = {
@@ -243,6 +243,7 @@ const idclass_t epggrab_class = {
   .ic_caption    = N_("EPG grabber configuration"),
   .ic_event      = "epggrab",
   .ic_perm_def   = ACCESS_ADMIN,
+  .ic_changed    = epggrab_class_changed,
   .ic_save       = epggrab_class_save,
   .ic_groups     = (const property_group_t[]) {
       {
@@ -321,8 +322,8 @@ const idclass_t epggrab_class = {
     {
       .type   = PT_BOOL,
       .id     = "ota_initial",
-      .name   = N_("Force initial EPG scan at start-up"),
-      .desc   = N_("Force an initial EPG scan at start-up."),
+      .name   = N_("Force initial EPG grab at start-up"),
+      .desc   = N_("Force an initial EPG grab at start-up."),
       .off    = offsetof(epggrab_conf_t, ota_initial),
       .opts   = PO_ADVANCED,
       .group  = 3,
@@ -436,6 +437,7 @@ void epggrab_done ( void )
 
   pthread_mutex_lock(&global_lock);
   while ((mod = LIST_FIRST(&epggrab_modules)) != NULL) {
+    idnode_save_check(&mod->idnode, 1);
     idnode_unlink(&mod->idnode);
     LIST_REMOVE(mod, link);
     pthread_mutex_unlock(&global_lock);

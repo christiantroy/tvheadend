@@ -69,7 +69,7 @@ struct imagecache_config imagecache_conf = {
   .idnode.in_class = &imagecache_class,
 };
 
-static void imagecache_save(idnode_t *self);
+static htsmsg_t *imagecache_save(idnode_t *self, char *filename, size_t fsize);
 
 const idclass_t imagecache_class = {
   .ic_snode      = (idnode_t *)&imagecache_conf,
@@ -252,7 +252,7 @@ imagecache_image_fetch ( imagecache_image_t *img )
   char tpath[PATH_MAX] = "", path[PATH_MAX];
   tvhpoll_event_t ev;
   tvhpoll_t *efd = NULL;
-  http_client_t *hc;
+  http_client_t *hc = NULL;
 
   lock_assert(&global_lock);
 
@@ -316,6 +316,7 @@ imagecache_image_fetch ( imagecache_image_t *img )
 error_lock:
   pthread_mutex_lock(&global_lock);
 error:
+  if (NULL != hc) http_client_close(hc);
   urlreset(&url);
   tvhpoll_destroy(efd);
   img->state = IDLE;
@@ -506,14 +507,14 @@ imagecache_done ( void )
 /*
  * Save
  */
-static void
-imagecache_save ( idnode_t *self )
+static htsmsg_t *
+imagecache_save ( idnode_t *self, char *filename, size_t fsize )
 {
   htsmsg_t *c = htsmsg_create_map();
   idnode_save(&imagecache_conf.idnode, c);
-  hts_settings_save(c, "imagecache/config");
-  htsmsg_destroy(c);
+  snprintf(filename, fsize, "imagecache/config");
   pthread_cond_broadcast(&imagecache_cond);
+  return c;
 }
 
 /*

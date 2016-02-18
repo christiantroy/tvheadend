@@ -74,7 +74,7 @@ dvr_config_find_by_name_default(const char *name)
   if (dvrdefaultconfig == NULL) {
     cfg = dvr_config_create("", NULL, NULL);
     assert(cfg);
-    dvr_config_save(cfg);
+    idnode_changed(&cfg->dvr_id);
     dvrdefaultconfig = cfg;
   }
 
@@ -235,6 +235,8 @@ static void
 dvr_config_destroy(dvr_config_t *cfg, int delconf)
 {
   char ubuf[UUID_HEX_SIZE];
+
+  idnode_save_check(&cfg->dvr_id, delconf);
 
   if (delconf) {
     tvhinfo("dvr", "Deleting configuration '%s'", cfg->dvr_config_name);
@@ -512,38 +514,12 @@ dvr_config_delete(const char *name)
     tvhwarn("dvr", "Attempt to delete default config ignored");
 }
 
-/*
- *
- */
-void
-dvr_config_save(dvr_config_t *cfg)
-{
-  htsmsg_t *m = htsmsg_create_map();
-  char ubuf[UUID_HEX_SIZE];
-
-  lock_assert(&global_lock);
-
-  dvr_config_storage_check(cfg);
-  if (cfg->dvr_cleanup_threshold_free < 50)
-    cfg->dvr_cleanup_threshold_free = 50; // as checking is only periodically, lower is not save
-  if (cfg->dvr_removal_days != DVR_RET_FOREVER &&
-      cfg->dvr_removal_days > cfg->dvr_retention_days)
-    cfg->dvr_retention_days = DVR_RET_ONREMOVE;
-  if (cfg->dvr_removal_days > DVR_RET_FOREVER)
-    cfg->dvr_removal_days = DVR_RET_FOREVER;
-  if (cfg->dvr_retention_days > DVR_RET_FOREVER)
-    cfg->dvr_retention_days = DVR_RET_FOREVER;
-  idnode_save(&cfg->dvr_id, m);
-  hts_settings_save(m, "dvr/config/%s", idnode_uuid_as_str(&cfg->dvr_id, ubuf));
-  htsmsg_destroy(m);
-}
-
 /* **************************************************************************
  * DVR Config Class definition
  * **************************************************************************/
 
 static void
-dvr_config_class_save(idnode_t *self)
+dvr_config_class_changed(idnode_t *self)
 {
   dvr_config_t *cfg = (dvr_config_t *)self;
   if (dvr_config_is_default(cfg))
@@ -555,7 +531,27 @@ dvr_config_class_save(idnode_t *self)
   } else {
     dvr_update_pathname_from_booleans(cfg);
   }
-  dvr_config_save(cfg);
+  dvr_config_storage_check(cfg);
+  if (cfg->dvr_cleanup_threshold_free < 50)
+    cfg->dvr_cleanup_threshold_free = 50; // as checking is only periodically, lower is not save
+  if (cfg->dvr_removal_days != DVR_RET_FOREVER &&
+      cfg->dvr_removal_days > cfg->dvr_retention_days)
+    cfg->dvr_retention_days = DVR_RET_ONREMOVE;
+  if (cfg->dvr_removal_days > DVR_RET_FOREVER)
+    cfg->dvr_removal_days = DVR_RET_FOREVER;
+  if (cfg->dvr_retention_days > DVR_RET_FOREVER)
+    cfg->dvr_retention_days = DVR_RET_FOREVER;
+}
+
+static htsmsg_t *
+dvr_config_class_save(idnode_t *self, char *filename, size_t fsize)
+{
+  dvr_config_t *cfg = (dvr_config_t *)self;
+  htsmsg_t *m = htsmsg_create_map();
+  char ubuf[UUID_HEX_SIZE];
+  idnode_save(&cfg->dvr_id, m);
+  snprintf(filename, fsize, "dvr/config/%s", idnode_uuid_as_str(&cfg->dvr_id, ubuf));
+  return m;
 }
 
 static void
@@ -791,6 +787,7 @@ const idclass_t dvr_config_class = {
   .ic_class      = "dvrconfig",
   .ic_caption    = N_("DVR configuration profile"),
   .ic_event      = "dvrconfig",
+  .ic_changed    = dvr_config_class_changed,
   .ic_save       = dvr_config_class_save,
   .ic_get_title  = dvr_config_class_get_title,
   .ic_delete     = dvr_config_class_delete,
@@ -830,6 +827,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "enabled",
       .name     = N_("Enabled"),
+      .desc     = N_("Enable/disable profile."),
       .set      = dvr_config_class_enabled_set,
       .off      = offsetof(dvr_config_t, dvr_enabled),
       .def.i    = 1,
@@ -840,6 +838,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_STR,
       .id       = "name",
       .name     = N_("Configuration name"),
+      .desc     = N_("Name of the profile."),
       .set      = dvr_config_class_name_set,
       .off      = offsetof(dvr_config_t, dvr_config_name),
       .def.s    = "! New config",
@@ -850,6 +849,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_STR,
       .id       = "comment",
       .name     = N_("Comment"),
+      .desc     = N_("Free-form field, enter whatever you like here."),
       .off      = offsetof(dvr_config_t, dvr_comment),
       .group    = 1,
     },
@@ -857,6 +857,8 @@ const idclass_t dvr_config_class = {
       .type     = PT_STR,
       .id       = "profile",
       .name     = N_("Stream profile"),
+      .desc     = N_("The stream profile the DVR profile will use for "
+                     "recordings."),
       .set      = dvr_config_class_profile_set,
       .get      = dvr_config_class_profile_get,
       .rend     = dvr_config_class_profile_rend,
@@ -867,6 +869,9 @@ const idclass_t dvr_config_class = {
       .type     = PT_INT,
       .id       = "cache",
       .name     = N_("Cache scheme"),
+      .desc     = N_("The cache scheme to use/used to store recordings. "
+                     "Leave as \"system\" unless you have a special use "
+                     "case for one of the others. See Help for details."),
       .off      = offsetof(dvr_config_t, dvr_muxcnf.m_cache),
       .def.i    = MC_CACHE_DONTKEEP,
       .list     = dvr_config_class_cache_list,
@@ -877,6 +882,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_U32,
       .id       = "retention-days",
       .name     = N_("DVR log retention period"),
+      .desc     = N_("Number of days to retain infomation about recordings."),
       .off      = offsetof(dvr_config_t, dvr_retention_days),
       .def.u32  = DVR_RET_ONREMOVE,
       .list     = dvr_config_class_retention_list,
@@ -887,6 +893,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_U32,
       .id       = "removal-days",
       .name     = N_("DVR file retention period"),
+      .desc     = N_("Number of days to keep the recorded files."),
       .off      = offsetof(dvr_config_t, dvr_removal_days),
       .def.u32  = DVR_RET_FOREVER,
       .list     = dvr_config_class_removal_list,
@@ -896,6 +903,8 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "clone",
       .name     = N_("Clone scheduled entry on error"),
+      .desc     = N_("If an error occurs clone the scheduled entry and "
+                     "try to record again (if possible)."),
       .off      = offsetof(dvr_config_t, dvr_clone),
       .opts     = PO_ADVANCED,
       .def.u32  = 1,
@@ -905,6 +914,8 @@ const idclass_t dvr_config_class = {
       .type     = PT_U32,
       .id       = "rerecord-errors",
       .name     = N_("Schedule a re-recording if more errors than (0=off)"),
+      .desc     = N_("If more than x errors occur during a recording "
+                     "schedule a re-record (if possible)."),
       .off      = offsetof(dvr_config_t, dvr_rerecord_errors),
       .opts     = PO_ADVANCED,
       .group    = 1,
@@ -913,6 +924,10 @@ const idclass_t dvr_config_class = {
       .type     = PT_U32,
       .id       = "warm-time",
       .name     = N_("Extra warming up time (seconds)"),
+      .desc     = N_("Additional time (in seconds) in which to get "
+                     "the tuner ready for recording. This is useful for "
+                     "those with tuners that take some time to tune "
+                     "and/or send garbage data at the beginning. "),
       .off      = offsetof(dvr_config_t, dvr_warm_time),
       .opts     = PO_ADVANCED,
       .group    = 1,
@@ -921,7 +936,15 @@ const idclass_t dvr_config_class = {
     {
       .type     = PT_U32,
       .id       = "pre-extra-time",
-      .name     = N_("Extra padding before recordings (minutes)"),
+      .name     = N_("Pre-recording padding"),
+      .desc     = N_("Start recording earlier than the defined "
+                     "Start recording earlier than the defined start "
+                     "time by x minutes: for example, if a program is "
+                     "to start at 13:00 and you set a padding of 5 "
+                     "minutes it will start recording at 12:54:30 "
+                     "(including a warm-up time of 30 seconds). If this "
+                     "isn't specified, any pre-recording padding as set "
+                     "in the channel or DVR entry will be used."),
       .off      = offsetof(dvr_config_t, dvr_extra_time_pre),
       .list     = dvr_config_class_extra_list,
       .opts     = PO_ADVANCED,
@@ -930,7 +953,9 @@ const idclass_t dvr_config_class = {
     {
       .type     = PT_U32,
       .id       = "post-extra-time",
-      .name     = N_("Extra padding after recordings (minutes)"),
+      .name     = N_("Post-recording padding"),
+      .desc     = N_("Continue recording for x minutes after scheduled "
+                     "stop time."),
       .off      = offsetof(dvr_config_t, dvr_extra_time_post),
       .list     = dvr_config_class_extra_list,
       .opts     = PO_ADVANCED,
@@ -940,6 +965,8 @@ const idclass_t dvr_config_class = {
       .type     = PT_U32,
       .id       = "epg-update-window",
       .name     = N_("EPG update window"),
+      .desc     = N_("Maximum allowed difference between event start time when "
+                     "the EPG event is changed."),
       .off      = offsetof(dvr_config_t, dvr_update_window),
       .list     = dvr_config_entry_class_update_window_list,
       .def.u32  = 24*3600,
@@ -950,7 +977,10 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "epg-running",
       .name     = N_("Use EPG running state"),
-      .desc     = N_("Use EITp/f to decide event start / stop"),
+      .desc     = N_("Use EITp/f to decide event start/stop. This is "
+                     "also known as \"Accurate Recording\". Note that "
+                     "this can have unexpected results if the "
+                     "broadcaster isn't very good at time keeping."),
       .off      = offsetof(dvr_config_t, dvr_running),
       .opts     = PO_ADVANCED,
       .def.u32  = 1,
@@ -960,6 +990,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_U32,
       .id       = "autorec-maxcount",
       .name     = N_("Autorec maximum count (0=unlimited)"),
+      .desc     = N_("The maximum number of entries that can be matched."),
       .off      = offsetof(dvr_config_t, dvr_autorec_max_count),
       .opts     = PO_ADVANCED,
       .group    = 1,
@@ -968,6 +999,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_U32,
       .id       = "autorec-maxsched",
       .name     = N_("Autorec maximum schedules limit (0=unlimited)"),
+      .desc     = N_("The maximum number of recordings that can be scheduled."),
       .off      = offsetof(dvr_config_t, dvr_autorec_max_sched_count),
       .opts     = PO_ADVANCED,
       .group    = 1,
@@ -976,6 +1008,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_STR,
       .id       = "postproc",
       .name     = N_("Post-processor command"),
+      .desc     = N_("Script/program to be run when a recording completes."),
       .off      = offsetof(dvr_config_t, dvr_postproc),
       .opts     = PO_ADVANCED,
       .group    = 1,
@@ -984,6 +1017,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_STR,
       .id       = "postremove",
       .name     = N_("Post-remove command"),
+      .desc     = N_("Script/program to be run when a recording gets removed."),
       .off      = offsetof(dvr_config_t, dvr_postremove),
       .opts     = PO_EXPERT,
       .group    = 1,
@@ -992,6 +1026,9 @@ const idclass_t dvr_config_class = {
       .type     = PT_STR,
       .id       = "storage",
       .name     = N_("Recording system path"),
+      .desc     = N_("Path where the recordings are stored. If "
+                     "components of the path do not exist, "
+                     "Tvheadend will try to create them."),
       .off      = offsetof(dvr_config_t, dvr_storage),
       .group    = 2,
     },
@@ -999,6 +1036,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_U32,
       .id       = "storage-mfree",
       .name     = N_("Maintain free storage space in MiB"),
+      .desc     = N_("Keep x amount of storage space free."),
       .off      = offsetof(dvr_config_t, dvr_cleanup_threshold_free),
       .def.i    = 1000,
       .opts     = PO_ADVANCED,
@@ -1008,6 +1046,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_U32,
       .id       = "storage-mused",
       .name     = N_("Maintain used storage space in MiB (0=disabled)"),
+      .desc     = N_("Use x amount of storage space."),
       .off      = offsetof(dvr_config_t, dvr_cleanup_threshold_used),
       .def.i    = 0,
       .opts     = PO_EXPERT,
@@ -1017,6 +1056,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_PERM,
       .id       = "file-permissions",
       .name     = N_("File permissions (octal, e.g. 0664)"),
+      .desc     = N_("Create files using these permissions."),
       .off      = offsetof(dvr_config_t, dvr_muxcnf.m_file_permissions),
       .opts     = PO_EXPERT,
       .def.u32  = 0664,
@@ -1026,6 +1066,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_STR,
       .id       = "charset",
       .name     = N_("Filename character set"),
+      .desc     = N_("Use this character set when setting filenames."),
       .off      = offsetof(dvr_config_t, dvr_charset),
       .set      = dvr_config_class_charset_set,
       .list     = dvr_config_class_charset_list,
@@ -1037,6 +1078,8 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "tag-files",
       .name     = N_("Tag files with metadata"),
+      .desc     = N_("Create tags in recordings using media containers "
+                     "that support metadata (if possible)."),
       .off      = offsetof(dvr_config_t, dvr_tag_files),
       .opts     = PO_ADVANCED,
       .def.i    = 1,
@@ -1046,6 +1089,9 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "skip-commercials",
       .name     = N_("Skip commercials"),
+      .desc     = N_("Commercials will be dropped from the "
+                     "recordings. At the moment, commercial detection "
+                     "only works for the Swedish channel TV4."),
       .off      = offsetof(dvr_config_t, dvr_skip_commercials),
       .opts     = PO_ADVANCED,
       .def.i    = 1,
@@ -1055,6 +1101,9 @@ const idclass_t dvr_config_class = {
       .type     = PT_STR,
       .id       = "pathname",
       .name     = N_("Format string"),
+      .desc     = N_("The string allows you to manually specify the "
+                     "full path generation using predefined "
+                     "modifiers. See Help for full details."),
       .set      = dvr_config_class_pathname_set,
       .off      = offsetof(dvr_config_t, dvr_pathname),
       .opts     = PO_EXPERT,
@@ -1064,6 +1113,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_PERM,
       .id       = "directory-permissions",
       .name     = N_("Directory permissions (octal, e.g. 0775)"),
+      .desc     = N_("Create directories using these permissions."),
       .off      = offsetof(dvr_config_t, dvr_muxcnf.m_directory_permissions),
       .opts     = PO_EXPERT,
       .def.u32  = 0775,
@@ -1073,6 +1123,10 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "day-dir",
       .name     = N_("Make subdirectories per day"),
+      .desc     = N_("Create a new directory per day in the "
+                     "recording system path. Folders will only be "
+                     "created when something is recorded. The format "
+                     "of the directory will be ISO standard YYYY-MM-DD."),
       .off      = offsetof(dvr_config_t, dvr_dir_per_day),
       .opts     = PO_EXPERT,
       .group    = 4,
@@ -1081,6 +1135,10 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "channel-dir",
       .name     = N_("Make subdirectories per channel"),
+      .desc     = N_("Create a directory per channel when "
+                     "storing recordings. If both this and the 'directory "
+                     "per day' checkbox is enabled, the date-directory "
+                     "will be the parent of the per-channel directory."),
       .off      = offsetof(dvr_config_t, dvr_channel_dir),
       .opts     = PO_EXPERT,
       .group    = 4,
@@ -1089,6 +1147,10 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "title-dir",
       .name     = N_("Make subdirectories per title"),
+      .desc     = N_("Create a directory per title when "
+                     "storing recordings. If the day/channel directory "
+                     "checkboxes are also enabled, those directories "
+                     "will be parents of this directory."),
       .off      = offsetof(dvr_config_t, dvr_title_dir),
       .opts     = PO_EXPERT,
       .group    = 4,
@@ -1097,6 +1159,9 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "channel-in-title",
       .name     = N_("Include channel name in filename"),
+      .desc     = N_("Include the name of the channel in "
+                     "the event title. This applies to both the title "
+                     "stored in the file and to the filename itself."),
       .off      = offsetof(dvr_config_t, dvr_channel_in_title),
       .opts     = PO_EXPERT,
       .group    = 5,
@@ -1105,6 +1170,9 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "date-in-title",
       .name     = N_("Include date in filename"),
+      .desc     = N_("Include the date for the recording in "
+                     "the event title. This applies to both the title "
+                     "stored in the file and to the filename itself."),
       .off      = offsetof(dvr_config_t, dvr_date_in_title),
       .opts     = PO_EXPERT,
       .group    = 5,
@@ -1113,6 +1181,9 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "time-in-title",
       .name     = N_("Include time in filename"),
+      .desc     = N_("Include the time for the recording in "
+                     "the event title. This applies to both the title "
+                     "stored in the file and to the filename itself."),
       .off      = offsetof(dvr_config_t, dvr_time_in_title),
       .opts     = PO_EXPERT,
       .group    = 5,
@@ -1121,6 +1192,8 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "episode-in-title",
       .name     = N_("Include episode in filename"),
+      .desc     = N_("Include the season and episode in the "
+                     "title (if available)."),
       .off      = offsetof(dvr_config_t, dvr_episode_in_title),
       .opts     = PO_EXPERT,
       .group    = 5,
@@ -1129,6 +1202,8 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "subtitle-in-title",
       .name     = N_("Include subtitle in filename"),
+      .desc     = N_("Include the episode subtitle in the "
+                     "title (if available)."),
       .off      = offsetof(dvr_config_t, dvr_subtitle_in_title),
       .opts     = PO_EXPERT,
       .group    = 6,
@@ -1137,6 +1212,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "omit-title",
       .name     = N_("Don't include title in filename"),
+      .desc     = N_("Don't include the title in the filename."),
       .off      = offsetof(dvr_config_t, dvr_omit_title),
       .opts     = PO_EXPERT,
       .group    = 6,
@@ -1145,6 +1221,9 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "clean-title",
       .name     = N_("Remove all unsafe characters from filename"),
+      .desc     = N_("All characters that could possibly "
+                     "cause problems for filenaming will be replaced "
+                     "with an underscore. See Help for details."),
       .off      = offsetof(dvr_config_t, dvr_clean_title),
       .opts     = PO_EXPERT,
       .group    = 6,
@@ -1153,6 +1232,7 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "whitespace-in-title",
       .name     = N_("Replace whitespace in title with '-'"),
+      .desc     = N_("Replaces all whitespace in the title with '-'."),
       .off      = offsetof(dvr_config_t, dvr_whitespace_in_title),
       .opts     = PO_EXPERT,
       .group    = 6,
@@ -1161,6 +1241,9 @@ const idclass_t dvr_config_class = {
       .type     = PT_BOOL,
       .id       = "windows-compatible-filenames",
       .name     = N_("Use Windows-compatible filenames"),
+      .desc     = N_("Characters not supported in Windows filenames "
+                     "(e.g. for an SMB/CIFS share) will be stripped out "
+                     "or converted."),
       .off      = offsetof(dvr_config_t, dvr_windows_compatible_filenames),
       .opts     = PO_EXPERT,
       .group    = 6,
